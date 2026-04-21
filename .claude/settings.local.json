@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -m 'fix: correct iOS build artifact path *)",
+      "Bash(git push *)",
+      "Bash(git commit -m 'feat: build iOS IPA instead of Runner.app for easier distribution *)"
+    ]
+  }
+}
