@@ -19,7 +19,7 @@ jobs:
         run: flutter pub get
 
       - name: Pod install
-        run: cd ios && pod install && popd
+        run: cd ios && pod install
 
       - name: Build iOS
         run: flutter build ios --release --no-codesign
