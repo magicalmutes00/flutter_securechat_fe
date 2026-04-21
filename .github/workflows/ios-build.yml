@@ -15,11 +15,17 @@ jobs:
         with:
           flutter-version: 3.29.0
 
-      - run: flutter pub get
-      - run: cd ios && pod install
-      - run: flutter build ios --release --no-codesign
+      - name: Flutter pub get
+        run: flutter pub get
 
-      - uses: actions/upload-artifact@v4
+      - name: Pod install
+        run: cd ios && pod install && popd
+
+      - name: Build iOS
+        run: flutter build ios --release --no-codesign
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: build/ios/iphoneos
+          path: build/ios/iphoneos/Release/Runner.app
