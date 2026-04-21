@@ -28,4 +28,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ios-build
-          path: build/ios/iphoneos/Release/Runner.app
+          path: build/ios/iphoneos/Runner.app
