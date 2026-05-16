@@ -1,6 +1,7 @@
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
+import '../../../data/services/local_storage_service.dart';
 import '../../../data/services/websocket_service.dart';
 import 'auth_event.dart';
 import 'auth_state.dart';
@@ -8,6 +9,7 @@ import 'auth_state.dart';
 class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
+  final LocalStorageService _localStorage = LocalStorageService();
 
   AuthBloc() : super(const AuthState()) {
     on<AuthCheckRequested>(_onAuthCheckRequested);
@@ -17,6 +19,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthPhoneRegisterRequested>(_onAuthPhoneRegisterRequested);
     on<AuthLogoutRequested>(_onAuthLogoutRequested);
     on<AuthProfileUpdateRequested>(_onAuthProfileUpdateRequested);
+    on<AuthAvatarUploadRequested>(_onAuthAvatarUploadRequested);
   }
 
   Future<void> _onAuthCheckRequested(
@@ -288,8 +291,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     AuthLogoutRequested event,
     Emitter<AuthState> emit,
   ) async {
+    final currentUserId = state.user?.id;
     await _wsService.disconnect();
     await _apiClient.clearTokens();
+    if (currentUserId != null) {
+      await _localStorage.clearUserData(currentUserId);
+    }
     emit(const AuthState(status: AuthStatus.unauthenticated));
   }
 
@@ -306,6 +313,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       final data = <String, dynamic>{};
       if (event.displayName != null) data['display_name'] = event.displayName;
       if (event.username != null) data['username'] = event.username;
+      if (event.avatarUrl != null) data['avatar_url'] = event.avatarUrl;
 
       final result = await _apiClient.updateProfile(data);
       final user = User.fromJson(result);
@@ -314,6 +322,42 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         status: AuthStatus.authenticated,
         user: user,
         errorMessage: null,
+      ));
+    } catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: e.toString(),
+      ));
+    }
+  }
+
+  Future<void> _onAuthAvatarUploadRequested(
+    AuthAvatarUploadRequested event,
+    Emitter<AuthState> emit,
+  ) async {
+    emit(state.copyWith(
+      status: AuthStatus.loading,
+      errorMessage: null,
+    ));
+
+    try {
+      final result = await _apiClient.uploadFile(event.filePath, 'image');
+      if (result['success'] == true) {
+        final avatarUrl = result['url'] as String?;
+        if (avatarUrl != null) {
+          final profileResult = await _apiClient.updateProfile({'avatar_url': avatarUrl});
+          final user = User.fromJson(profileResult);
+          emit(state.copyWith(
+            status: AuthStatus.authenticated,
+            user: user,
+            errorMessage: null,
+          ));
+          return;
+        }
+      }
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: 'Failed to upload avatar',
       ));
     } catch (e) {
       emit(state.copyWith(

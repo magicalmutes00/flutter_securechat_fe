@@ -1,10 +1,17 @@
+import '../../core/environment/environment_config.dart';
+
 class AppConstants {
   AppConstants._();
 
-  // API Configuration - Use 192.168.1.2 for physical device on same network
-  static const String baseUrl = 'http://192.168.1.2:8080';
+  // API Configuration - Now uses environment-based configuration
+  static String get baseUrl => EnvironmentConfig.baseUrl;
   static const String apiPath = '/api';
-  static const String wsPath = '/ws';
+  static String get wsPath => EnvironmentConfig.wsPath;
+
+  // OneSignal Configuration
+  // Replace with your OneSignal App ID from https://onesignal.com
+  // Consider moving to environment config for different values per environment
+  static const String oneSignalAppId = 'a2fab7dd-c0b6-419c-840b-4c995cf891b4';
 
   // Message Types
   static const String messageTypeText = 'text';

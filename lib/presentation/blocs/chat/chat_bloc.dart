@@ -4,6 +4,8 @@ import '../../../core/constants/app_constants.dart';
 import '../../../data/models/message_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
+import '../../../data/services/local_storage_service.dart';
+import '../../../data/services/notification_service.dart';
 import '../../../data/services/websocket_service.dart';
 import 'chat_event.dart';
 import 'chat_state.dart';
@@ -11,6 +13,8 @@ import 'chat_state.dart';
 class ChatBloc extends Bloc<ChatEvent, ChatState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
+  final NotificationService _notificationService = NotificationService();
+  final LocalStorageService _localStorage = LocalStorageService();
 
   StreamSubscription? _messageSubscription;
   StreamSubscription? _typingSubscription;
@@ -27,6 +31,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatSendTypingStatus>(_onSendTypingStatus);
     on<ChatLoadConversations>(_onLoadConversations);
     on<ChatSearchUsers>(_onSearchUsers);
+    on<ChatDeleteMessage>(_onDeleteMessage);
+    on<ChatReset>(_onChatReset);
 
     _subscribeToWebSocket();
   }
@@ -58,10 +64,24 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatLoadMessages event,
     Emitter<ChatState> emit,
   ) async {
+    final currentUserId = _wsService.currentUserId;
+
+    if (currentUserId == null) return;
+
     emit(state.copyWith(
       status: ChatStatus.loading,
       currentChatUserId: event.userId,
     ));
+
+    final localMessages = _localStorage.getMessages(currentUserId, event.userId);
+
+    if (localMessages.isNotEmpty && !event.refresh) {
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        messages: localMessages,
+        hasMoreMessages: true,
+      ));
+    }
 
     try {
       final messagesData = await _apiClient.getMessages(
@@ -75,21 +95,33 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           .reversed
           .toList();
 
+      await _localStorage.saveMessages(currentUserId, event.userId, newMessages);
+
       final existingIds = state.messages.map((m) => m.id).toSet();
       final uniqueNewMessages = newMessages
           .where((m) => !existingIds.contains(m.id))
           .toList();
 
+      final allMessages = [...state.messages];
+      for (final msg in uniqueNewMessages) {
+        if (!allMessages.any((m) => m.id == msg.id)) {
+          allMessages.add(msg);
+        }
+      }
+      allMessages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+
       emit(state.copyWith(
         status: ChatStatus.loaded,
-        messages: event.refresh ? uniqueNewMessages : [...state.messages, ...uniqueNewMessages],
+        messages: allMessages,
         hasMoreMessages: newMessages.length >= AppConstants.messagesPageSize,
       ));
     } catch (e) {
-      emit(state.copyWith(
-        status: ChatStatus.error,
-        errorMessage: e.toString(),
-      ));
+      if (state.messages.isEmpty) {
+        emit(state.copyWith(
+          status: ChatStatus.error,
+          errorMessage: e.toString(),
+        ));
+      }
     }
   }
 
@@ -97,9 +129,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatSendTextMessage event,
     Emitter<ChatState> emit,
   ) async {
+    final currentUserId = _wsService.currentUserId ?? '';
+
     final tempMessage = Message(
       id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
-      senderId: _wsService.currentUserId ?? '',
+      senderId: currentUserId,
       receiverId: event.receiverId,
       messageType: AppConstants.messageTypeText,
       content: event.content,
@@ -107,7 +141,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       createdAt: DateTime.now(),
     );
 
-    // Update UI immediately
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[event.receiverId] = tempMessage;
 
@@ -134,7 +167,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       conversations: updatedConversations,
     ));
 
-    // Try to send via WebSocket, fallback to HTTP
+    if (currentUserId.isNotEmpty) {
+      await _localStorage.addMessage(currentUserId, event.receiverId, tempMessage);
+      await _localStorage.saveConversations(currentUserId, updatedConversations, newLastMessages);
+    }
+
     try {
       if (_wsService.isConnected) {
         _wsService.sendMessage(
@@ -196,18 +233,30 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     final message = event.message;
     final currentUserId = _wsService.currentUserId;
 
-    // Skip own messages
     if (currentUserId != null && message.senderId == currentUserId) {
       return;
     }
 
-    // Skip duplicates
     final existingIds = state.messages.map((m) => m.id).toSet();
     if (existingIds.contains(message.id)) {
       return;
     }
 
-    // Add to messages if for current chat
+    final isViewingThisChat = state.currentChatUserId != null &&
+        (message.senderId == state.currentChatUserId ||
+            message.receiverId == state.currentChatUserId);
+
+    if (!isViewingThisChat) {
+      _notificationService.showLocalNotification(
+        title: 'New message',
+        body: message.isTextMessage
+            ? message.content
+            : _getMessageTypeLabel(message.messageType),
+        senderId: message.senderId,
+        data: {'sender_id': message.senderId, 'message_id': message.id},
+      );
+    }
+
     if (state.currentChatUserId != null &&
         (message.senderId == state.currentChatUserId ||
             message.receiverId == state.currentChatUserId)) {
@@ -216,11 +265,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       ));
     }
 
-    // Update last message
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[message.senderId] = message;
 
-    // Add conversation if needed
     Map<String, User> updatedConversations = state.conversations;
     if (!state.conversations.containsKey(message.senderId)) {
       final newUser = User(
@@ -240,6 +287,26 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       lastMessages: newLastMessages,
       conversations: updatedConversations,
     ));
+
+    if (currentUserId != null) {
+      _localStorage.addMessage(currentUserId, message.senderId, message);
+      _localStorage.saveConversations(currentUserId, updatedConversations, newLastMessages);
+    }
+  }
+
+  String _getMessageTypeLabel(String messageType) {
+    switch (messageType) {
+      case AppConstants.messageTypeImage:
+        return '📷 Photo';
+      case AppConstants.messageTypeVideo:
+        return '🎥 Video';
+      case AppConstants.messageTypeAudio:
+        return '🎤 Voice message';
+      case AppConstants.messageTypeDocument:
+        return '📄 Document';
+      default:
+        return 'New message';
+    }
   }
 
   Future<void> _onUpdateMessageStatus(
@@ -267,8 +334,18 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatLoadConversations event,
     Emitter<ChatState> emit,
   ) async {
-    // Only show loading if we don't have conversations yet
-    if (state.conversations.isEmpty) {
+    final currentUserId = _wsService.currentUserId;
+
+    if (currentUserId == null) return;
+
+    final localData = _localStorage.getConversations(currentUserId);
+    if (localData != null && localData.conversations.isNotEmpty) {
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        conversations: localData.conversations,
+        lastMessages: localData.lastMessages,
+      ));
+    } else if (state.conversations.isEmpty) {
       emit(state.copyWith(status: ChatStatus.loading));
     }
 
@@ -283,12 +360,14 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         final user = User.fromJson(userData);
         conversations[user.id] = user;
 
-        // Get last message if available
         if (conv['last_message'] != null) {
           final lastMsg = Message.fromJson(conv['last_message'] as Map<String, dynamic>);
           lastMessages[user.id] = lastMsg;
         }
       }
+
+      await _localStorage.saveConversations(currentUserId, conversations, lastMessages);
+      await _localStorage.setLastSyncTime(currentUserId);
 
       emit(state.copyWith(
         status: ChatStatus.loaded,
@@ -296,7 +375,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         lastMessages: lastMessages,
       ));
     } catch (e) {
-      // Only set error if we don't have existing conversations
       if (state.conversations.isEmpty) {
         emit(state.copyWith(
           status: ChatStatus.error,
@@ -331,6 +409,47 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         errorMessage: e.toString(),
       ));
     }
+  }
+
+  Future<void> _onDeleteMessage(
+    ChatDeleteMessage event,
+    Emitter<ChatState> emit,
+  ) async {
+    try {
+      await _apiClient.deleteMessage(event.messageId);
+
+      final updatedMessages = state.messages
+          .where((m) => m.id != event.messageId)
+          .toList();
+
+      final updatedLastMessages = Map<String, Message>.from(state.lastMessages);
+      if (state.lastMessages[event.otherUserId]?.id == event.messageId) {
+        final remaining = updatedMessages
+            .where((m) => m.senderId == event.otherUserId || m.receiverId == event.otherUserId)
+            .toList();
+        if (remaining.isNotEmpty) {
+          updatedLastMessages[event.otherUserId] = remaining.last;
+        } else {
+          updatedLastMessages.remove(event.otherUserId);
+        }
+      }
+
+      emit(state.copyWith(
+        messages: updatedMessages,
+        lastMessages: updatedLastMessages,
+      ));
+    } catch (e) {
+      emit(state.copyWith(
+        errorMessage: 'Failed to delete message: $e',
+      ));
+    }
+  }
+
+  void _onChatReset(
+    ChatReset event,
+    Emitter<ChatState> emit,
+  ) {
+    emit(const ChatState());
   }
 
   @override

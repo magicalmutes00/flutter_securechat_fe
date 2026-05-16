@@ -11,6 +11,8 @@ import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
 import 'chat_screen.dart';
 import 'login_screen.dart';
+import 'profile_page.dart';
+import 'settings_page.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -70,9 +72,11 @@ class _HomeScreenState extends State<HomeScreen> {
           TextButton(
             onPressed: () {
               Navigator.pop(context);
+              context.read<ChatBloc>().add(ChatReset());
               context.read<AuthBloc>().add(AuthLogoutRequested());
-              Navigator.of(context).pushReplacement(
+              Navigator.of(context).pushAndRemoveUntil(
                 MaterialPageRoute(builder: (_) => const LoginScreen()),
+                (route) => false,
               );
             },
             child: const Text('Logout', style: TextStyle(color: AppTheme.errorColor)),
@@ -129,6 +133,16 @@ class _HomeScreenState extends State<HomeScreen> {
             onSelected: (value) {
               if (value == 'logout') {
                 _logout();
+              } else if (value == 'profile') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ProfilePage()),
+                );
+              } else if (value == 'settings') {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SettingsPage()),
+                );
               }
             },
           ),

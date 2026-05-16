@@ -3,6 +3,8 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'core/theme/app_theme.dart';
+import 'data/services/local_storage_service.dart';
+import 'data/services/notification_service.dart';
 import 'presentation/blocs/auth/auth_bloc.dart';
 import 'presentation/blocs/auth/auth_event.dart';
 import 'presentation/blocs/auth/auth_state.dart';
@@ -15,15 +17,21 @@ void main() async {
 
   try {
     await Hive.initFlutter();
+    await LocalStorageService().init();
   } catch (e) {
-    debugPrint('Failed to initialize Hive: $e');
+    debugPrint('Failed to initialize storage: $e');
   }
 
-  runApp(const SecureChatApp());
+  final notificationService = NotificationService();
+  await notificationService.initialize();
+
+  runApp(SecureChatApp(notificationService: notificationService));
 }
 
 class SecureChatApp extends StatelessWidget {
-  const SecureChatApp({super.key});
+  final NotificationService notificationService;
+
+  const SecureChatApp({super.key, required this.notificationService});
 
   @override
   Widget build(BuildContext context) {

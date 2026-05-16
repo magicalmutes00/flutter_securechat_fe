@@ -70,9 +70,19 @@ class AuthLogoutRequested extends AuthEvent {}
 class AuthProfileUpdateRequested extends AuthEvent {
   final String? displayName;
   final String? username;
+  final String? avatarUrl;
 
-  const AuthProfileUpdateRequested({this.displayName, this.username});
+  const AuthProfileUpdateRequested({this.displayName, this.username, this.avatarUrl});
 
   @override
-  List<Object?> get props => [displayName, username];
+  List<Object?> get props => [displayName, username, avatarUrl];
+}
+
+class AuthAvatarUploadRequested extends AuthEvent {
+  final String filePath;
+
+  const AuthAvatarUploadRequested({required this.filePath});
+
+  @override
+  List<Object?> get props => [filePath];
 }

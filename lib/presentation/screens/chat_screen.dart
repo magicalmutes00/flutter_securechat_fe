@@ -322,7 +322,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     final message = state.messages[state.messages.length - 1 - index];
                     return MessageBubble(
                       message: message,
-                      isMe: message.senderId != widget.user.id,
+                      isMe: message.senderId == widget.user.id,
                     );
                   },
                 );

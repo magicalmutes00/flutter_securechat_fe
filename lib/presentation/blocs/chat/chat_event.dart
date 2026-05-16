@@ -82,3 +82,18 @@ class ChatSearchUsers extends ChatEvent {
   @override
   List<Object?> get props => [query];
 }
+
+class ChatDeleteMessage extends ChatEvent {
+  final String messageId;
+  final String otherUserId;
+
+  const ChatDeleteMessage({
+    required this.messageId,
+    required this.otherUserId,
+  });
+
+  @override
+  List<Object?> get props => [messageId, otherUserId];
+}
+
+class ChatReset extends ChatEvent {}

@@ -189,7 +189,7 @@ class ApiClient {
 
   Future<List<dynamic>> searchUsers(String query) async {
     final response = await _dio.get(
-      '/api/auth/public/users/search',
+      '/api/auth/users/search',
       queryParameters: {'q': query},
     );
     return response.data['users'] as List<dynamic>;
@@ -220,6 +220,10 @@ class ApiClient {
       data: {'status': status},
     );
     return response.data as Map<String, dynamic>;
+  }
+
+  Future<void> deleteMessage(String messageId) async {
+    await _dio.delete('/api/chat/message/$messageId');
   }
 
   // File Upload Methods
