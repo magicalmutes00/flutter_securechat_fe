@@ -56,7 +56,8 @@ class ChatUpdateMessageStatus extends ChatEvent {
   final String messageId;
   final String status;
 
-  const ChatUpdateMessageStatus({required this.messageId, required this.status});
+  const ChatUpdateMessageStatus(
+      {required this.messageId, required this.status});
 
   @override
   List<Object?> get props => [messageId, status];
@@ -66,10 +67,37 @@ class ChatSendTypingStatus extends ChatEvent {
   final String receiverId;
   final bool isTyping;
 
-  const ChatSendTypingStatus({required this.receiverId, required this.isTyping});
+  const ChatSendTypingStatus(
+      {required this.receiverId, required this.isTyping});
 
   @override
   List<Object?> get props => [receiverId, isTyping];
+}
+
+class ChatReceiveTypingStatus extends ChatEvent {
+  final String senderId;
+  final bool isTyping;
+
+  const ChatReceiveTypingStatus({
+    required this.senderId,
+    required this.isTyping,
+  });
+
+  @override
+  List<Object?> get props => [senderId, isTyping];
+}
+
+class ChatReceiveReceipt extends ChatEvent {
+  final String peerUserId;
+  final String status;
+
+  const ChatReceiveReceipt({
+    required this.peerUserId,
+    required this.status,
+  });
+
+  @override
+  List<Object?> get props => [peerUserId, status];
 }
 
 class ChatLoadConversations extends ChatEvent {}

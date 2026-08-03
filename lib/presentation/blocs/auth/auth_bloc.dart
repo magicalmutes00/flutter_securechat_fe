@@ -17,6 +17,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthEmailRegisterRequested>(_onAuthEmailRegisterRequested);
     on<AuthPhoneLoginRequested>(_onAuthPhoneLoginRequested);
     on<AuthPhoneRegisterRequested>(_onAuthPhoneRegisterRequested);
+    on<AuthOtpRequested>(_onAuthOtpRequested);
+    on<AuthOtpVerifyRequested>(_onAuthOtpVerifyRequested);
     on<AuthLogoutRequested>(_onAuthLogoutRequested);
     on<AuthProfileUpdateRequested>(_onAuthProfileUpdateRequested);
     on<AuthAvatarUploadRequested>(_onAuthAvatarUploadRequested);
@@ -75,7 +77,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         password: event.password,
       );
 
-      final success = result['success'] == true || result.containsKey('access_token');
+      final success =
+          result['success'] == true || result.containsKey('access_token');
       final errorMessage = result['error'] ?? result['message'];
 
       if (success) {
@@ -133,9 +136,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       print('DEBUG register result: $result');
 
       // Check for various success indicators
-      final hasAccessToken = result.containsKey('access_token') || result.containsKey('token');
+      final hasAccessToken =
+          result.containsKey('access_token') || result.containsKey('token');
       final hasUser = result.containsKey('user');
-      final isSuccess = result['success'] == true || (hasAccessToken && hasUser);
+      final isSuccess =
+          result['success'] == true || (hasAccessToken && hasUser);
 
       if (isSuccess) {
         final userData = result['user'] ?? result;
@@ -154,7 +159,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           errorMessage: null,
         ));
       } else {
-        final errorMsg = result['error'] ?? result['message'] ?? 'Registration failed';
+        final errorMsg =
+            result['error'] ?? result['message'] ?? 'Registration failed';
         print('DEBUG register failed: $errorMsg');
         emit(state.copyWith(
           status: AuthStatus.error,
@@ -191,7 +197,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         password: event.password,
       );
 
-      final success = result['success'] == true || result.containsKey('access_token');
+      final success =
+          result['success'] == true || result.containsKey('access_token');
       final errorMessage = result['error'] ?? result['message'];
 
       if (success) {
@@ -246,9 +253,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
         displayName: event.displayName,
       );
 
-      final hasAccessToken = result.containsKey('access_token') || result.containsKey('token');
+      final hasAccessToken =
+          result.containsKey('access_token') || result.containsKey('token');
       final hasUser = result.containsKey('user');
-      final isSuccess = result['success'] == true || (hasAccessToken && hasUser);
+      final isSuccess =
+          result['success'] == true || (hasAccessToken && hasUser);
 
       if (isSuccess) {
         final userData = result['user'] ?? result;
@@ -267,7 +276,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           errorMessage: null,
         ));
       } else {
-        final errorMsg = result['error'] ?? result['message'] ?? 'Registration failed';
+        final errorMsg =
+            result['error'] ?? result['message'] ?? 'Registration failed';
         emit(state.copyWith(
           status: AuthStatus.error,
           errorMessage: errorMsg,
@@ -283,6 +293,98 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       emit(state.copyWith(
         status: AuthStatus.error,
         errorMessage: errorMsg,
+      ));
+    }
+  }
+
+  Future<void> _onAuthOtpRequested(
+    AuthOtpRequested event,
+    Emitter<AuthState> emit,
+  ) async {
+    emit(state.copyWith(
+      status: AuthStatus.loading,
+      phone: event.phone,
+      errorMessage: null,
+    ));
+
+    try {
+      final result = await _apiClient.requestOtp(
+        event.phone,
+        countryCode: event.countryCode,
+      );
+
+      if (result['success'] == true) {
+        emit(state.copyWith(
+          status: AuthStatus.otpSent,
+          correlationId: result['correlation_id'],
+          otpPhone: event.phone,
+          devOtpCode: result['dev_code'],
+          errorMessage: null,
+        ));
+      } else {
+        emit(state.copyWith(
+          status: AuthStatus.error,
+          errorMessage: result['error'] ?? 'Failed to send OTP',
+        ));
+      }
+    } catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: e.toString(),
+      ));
+    }
+  }
+
+  Future<void> _onAuthOtpVerifyRequested(
+    AuthOtpVerifyRequested event,
+    Emitter<AuthState> emit,
+  ) async {
+    emit(state.copyWith(
+      status: AuthStatus.loading,
+      errorMessage: null,
+    ));
+
+    try {
+      final result = await _apiClient.verifyOtpAndLogin(
+        phone: event.phone,
+        countryCode: event.countryCode,
+        otpCode: event.otpCode,
+        correlationId: event.correlationId,
+      );
+
+      final success = result['success'] == true && result['verified'] == true;
+
+      if (success) {
+        await _apiClient.saveTokens(
+          result['access_token'],
+          result['refresh_token'],
+        );
+
+        // The verify response does not include the user profile; fetch it.
+        final profileData = await _apiClient.getProfile();
+        final user = User.fromJson(profileData);
+
+        _wsService.setCurrentUserId(user.id);
+        await _wsService.connect();
+
+        emit(state.copyWith(
+          status: AuthStatus.authenticated,
+          user: user,
+          correlationId: null,
+          otpPhone: null,
+          devOtpCode: null,
+          errorMessage: null,
+        ));
+      } else {
+        emit(state.copyWith(
+          status: AuthStatus.error,
+          errorMessage: result['error'] ?? 'Verification failed',
+        ));
+      }
+    } catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: e.toString(),
       ));
     }
   }
@@ -345,7 +447,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       if (result['success'] == true) {
         final avatarUrl = result['url'] as String?;
         if (avatarUrl != null) {
-          final profileResult = await _apiClient.updateProfile({'avatar_url': avatarUrl});
+          final profileResult =
+              await _apiClient.updateProfile({'avatar_url': avatarUrl});
           final user = User.fromJson(profileResult);
           emit(state.copyWith(
             status: AuthStatus.authenticated,

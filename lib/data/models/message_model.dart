@@ -4,6 +4,7 @@ class Message extends Equatable {
   final String id;
   final String senderId;
   final String receiverId;
+  final String? groupId;
   final String messageType;
   final String content;
   final String? filePath;
@@ -14,10 +15,25 @@ class Message extends Equatable {
   final DateTime createdAt;
   final DateTime? updatedAt;
 
+  // E2EE: for encrypted messages `content` is empty and the ciphertext travels
+  // in these opaque fields. Local copies store the decrypted text.
+  final String encryption;
+  final int? cipherType;
+  final String? cipherBody;
+
+  // Group sender-key distribution message (first message to a member).
+  final String? distribution;
+
+  // Transient AES-256-GCM media keys, populated in-memory after decrypting the
+  // media envelope. Never serialized to the server or local cache.
+  final String? mediaKey;
+  final String? mediaNonce;
+
   const Message({
     required this.id,
     required this.senderId,
     required this.receiverId,
+    this.groupId,
     required this.messageType,
     required this.content,
     this.filePath,
@@ -27,6 +43,12 @@ class Message extends Equatable {
     required this.status,
     required this.createdAt,
     this.updatedAt,
+    this.encryption = 'none',
+    this.cipherType,
+    this.cipherBody,
+    this.distribution,
+    this.mediaKey,
+    this.mediaNonce,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
@@ -34,6 +56,7 @@ class Message extends Equatable {
       id: json['id'] as String? ?? json['_id'] as String? ?? '',
       senderId: json['sender_id'] as String? ?? '',
       receiverId: json['receiver_id'] as String? ?? '',
+      groupId: json['group_id'] as String?,
       messageType: json['message_type'] as String? ?? 'text',
       content: json['content'] as String? ?? '',
       filePath: json['file_path'] as String?,
@@ -47,6 +70,10 @@ class Message extends Equatable {
       updatedAt: json['updated_at'] != null
           ? DateTime.parse(json['updated_at'] as String)
           : null,
+      encryption: json['encryption'] as String? ?? 'none',
+      cipherType: json['cipher_type'] as int?,
+      cipherBody: json['cipher_body'] as String?,
+      distribution: json['distribution'] as String?,
     );
   }
 
@@ -55,6 +82,7 @@ class Message extends Equatable {
       'id': id,
       'sender_id': senderId,
       'receiver_id': receiverId,
+      'group_id': groupId,
       'message_type': messageType,
       'content': content,
       'file_path': filePath,
@@ -64,6 +92,10 @@ class Message extends Equatable {
       'status': status,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
+      'encryption': encryption,
+      'cipher_type': cipherType,
+      'cipher_body': cipherBody,
+      'distribution': distribution,
     };
   }
 
@@ -71,6 +103,7 @@ class Message extends Equatable {
     String? id,
     String? senderId,
     String? receiverId,
+    String? groupId,
     String? messageType,
     String? content,
     String? filePath,
@@ -80,11 +113,18 @@ class Message extends Equatable {
     String? status,
     DateTime? createdAt,
     DateTime? updatedAt,
+    String? encryption,
+    int? cipherType,
+    String? cipherBody,
+    String? distribution,
+    String? mediaKey,
+    String? mediaNonce,
   }) {
     return Message(
       id: id ?? this.id,
       senderId: senderId ?? this.senderId,
       receiverId: receiverId ?? this.receiverId,
+      groupId: groupId ?? this.groupId,
       messageType: messageType ?? this.messageType,
       content: content ?? this.content,
       filePath: filePath ?? this.filePath,
@@ -94,6 +134,12 @@ class Message extends Equatable {
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      encryption: encryption ?? this.encryption,
+      cipherType: cipherType ?? this.cipherType,
+      cipherBody: cipherBody ?? this.cipherBody,
+      distribution: distribution ?? this.distribution,
+      mediaKey: mediaKey ?? this.mediaKey,
+      mediaNonce: mediaNonce ?? this.mediaNonce,
     );
   }
 
@@ -105,12 +151,14 @@ class Message extends Equatable {
   bool get isSent => status == 'sent';
   bool get isDelivered => status == 'delivered';
   bool get isRead => status == 'read';
+  bool get isGroupMessage => groupId != null;
 
   @override
   List<Object?> get props => [
         id,
         senderId,
         receiverId,
+        groupId,
         messageType,
         content,
         filePath,
@@ -120,5 +168,11 @@ class Message extends Equatable {
         status,
         createdAt,
         updatedAt,
+        encryption,
+        cipherType,
+        cipherBody,
+        distribution,
+        mediaKey,
+        mediaNonce,
       ];
 }

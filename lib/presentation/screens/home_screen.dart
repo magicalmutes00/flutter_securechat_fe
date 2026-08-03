@@ -2,17 +2,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:intl/intl.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/models/group_model.dart';
 import '../../data/models/message_model.dart';
+import '../../data/models/status_model.dart';
 import '../../data/models/user_model.dart';
+import '../../data/services/api_client.dart';
+import '../../data/services/notification_service.dart';
+import '../../data/services/push_notification_service.dart';
+import '../../data/services/rtc/call_manager.dart';
+import '../../data/services/websocket_service.dart';
 import '../blocs/auth/auth_bloc.dart';
 import '../blocs/auth/auth_event.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
+import '../widgets/status_stories_row.dart';
 import 'chat_screen.dart';
+import 'create_status_screen.dart';
+import 'group_chat_screen.dart';
 import 'login_screen.dart';
+import 'new_group_screen.dart';
 import 'profile_page.dart';
 import 'settings_page.dart';
+import 'story_viewer_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -22,10 +34,107 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  final ApiClient _apiClient = ApiClient();
+  List<Group> _groups = [];
+  List<Status> _myStatuses = [];
+  Map<String, List<Status>> _statusesByUser = {};
+  String _currentUserId = '';
+
   @override
   void initState() {
     super.initState();
     context.read<ChatBloc>().add(ChatLoadConversations());
+    _loadGroups();
+    _initCalls();
+    _initPush();
+    _loadStatuses();
+  }
+
+  Future<void> _initCalls() async {
+    try {
+      await CallManager.instance.init();
+    } catch (e) {
+      debugPrint('Failed to initialize call manager: $e');
+    }
+  }
+
+  Future<void> _initPush() async {
+    try {
+      await PushNotificationHandler()
+          .init(notificationService: NotificationService());
+    } catch (e) {
+      debugPrint('Failed to initialize push notifications: $e');
+    }
+  }
+
+  Future<void> _loadStatuses() async {
+    try {
+      final raw = await _apiClient.getStatuses();
+      final statuses = raw.map((e) {
+        final map = e as Map<String, dynamic>;
+        final status = Status.fromJson(map['status'] as Map<String, dynamic>);
+        final author = map['author'] as Map<String, dynamic>?;
+        return Status(
+          id: status.id,
+          userId: status.userId,
+          text: status.text,
+          mediaPath: status.mediaPath,
+          mediaType: status.mediaType,
+          createdAt: status.createdAt,
+          expiresAt: status.expiresAt,
+          viewers: status.viewers,
+          author: author != null ? User.fromJson(author) : null,
+        );
+      }).toList();
+
+      if (!mounted) return;
+      setState(() {
+        _currentUserId = WebSocketService().currentUserId ?? '';
+        _myStatuses =
+            statuses.where((s) => s.userId == _currentUserId).toList();
+        final grouped = <String, List<Status>>{};
+        for (final s in statuses) {
+          if (s.userId == _currentUserId) continue;
+          grouped.putIfAbsent(s.userId, () => []).add(s);
+        }
+        _statusesByUser = grouped;
+      });
+    } catch (e) {
+      // Statuses are best-effort; ignore failures.
+    }
+  }
+
+  Future<void> _openCreateStatus() async {
+    final created = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => const CreateStatusScreen()),
+    );
+    if (created == true) _loadStatuses();
+  }
+
+  void _openStoryViewer(User user, List<Status> statuses) {
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute(
+            builder: (_) => StoryViewerScreen(
+              user: user,
+              statuses: statuses,
+              currentUserId: _currentUserId,
+            ),
+          ),
+        )
+        .then((_) => _loadStatuses());
+  }
+
+  Future<void> _loadGroups() async {
+    try {
+      final raw = await _apiClient.getGroups();
+      final groups =
+          raw.map((e) => Group.fromJson(e as Map<String, dynamic>)).toList();
+      if (!mounted) return;
+      setState(() => _groups = groups);
+    } catch (e) {
+      // Ignore; groups self-correct on the next visit.
+    }
   }
 
   void _openChat(User user) {
@@ -35,6 +144,14 @@ class _HomeScreenState extends State<HomeScreen> {
           value: context.read<ChatBloc>(),
           child: ChatScreen(user: user),
         ),
+      ),
+    );
+  }
+
+  void _openGroup(Group group) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => GroupChatScreen(group: group),
       ),
     );
   }
@@ -79,7 +196,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 (route) => false,
               );
             },
-            child: const Text('Logout', style: TextStyle(color: AppTheme.errorColor)),
+            child: const Text('Logout',
+                style: TextStyle(color: AppTheme.errorColor)),
           ),
         ],
       ),
@@ -125,7 +243,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     Icon(Icons.logout, color: AppTheme.errorColor),
                     SizedBox(width: 12),
-                    Text('Logout', style: TextStyle(color: AppTheme.errorColor)),
+                    Text('Logout',
+                        style: TextStyle(color: AppTheme.errorColor)),
                   ],
                 ),
               ),
@@ -148,92 +267,167 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: BlocBuilder<ChatBloc, ChatState>(
-        builder: (context, state) {
-          // Show conversations if we have them, even if there's an error
-          if (state.conversations.isNotEmpty) {
-            return ListView.builder(
-              itemCount: state.conversations.length,
-              itemBuilder: (context, index) {
-                final user = state.conversations.values.elementAt(index);
-                final lastMessage = state.lastMessages[user.id];
-                return _ConversationTile(
-                  user: user,
-                  lastMessage: lastMessage,
-                  onTap: () => _openChat(user),
+      body: Column(
+        children: [
+          StatusStoriesRow(
+            myStatuses: _myStatuses,
+            statusesByUser: _statusesByUser,
+            currentUserId: _currentUserId,
+            onCreatePressed: _openCreateStatus,
+            onStatusTap: _openStoryViewer,
+          ),
+          if (_groups.isNotEmpty)
+            Container(
+              height: 96,
+              margin: const EdgeInsets.only(top: 4),
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                itemCount: _groups.length,
+                itemBuilder: (context, index) {
+                  final group = _groups[index];
+                  return InkWell(
+                    onTap: () => _openGroup(group),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          CircleAvatar(
+                            radius: 24,
+                            backgroundColor: AppTheme.primaryColor,
+                            child: Text(
+                              group.name.isEmpty
+                                  ? 'G'
+                                  : group.name[0].toUpperCase(),
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            group.name,
+                            style: const TextStyle(fontSize: 12),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          Expanded(
+            child: BlocBuilder<ChatBloc, ChatState>(
+              builder: (context, state) {
+                // Show conversations if we have them, even if there's an error
+                if (state.conversations.isNotEmpty) {
+                  return ListView.builder(
+                    itemCount: state.conversations.length,
+                    itemBuilder: (context, index) {
+                      final user = state.conversations.values.elementAt(index);
+                      final lastMessage = state.lastMessages[user.id];
+                      return _ConversationTile(
+                        user: user,
+                        lastMessage: lastMessage,
+                        onTap: () => _openChat(user),
+                      );
+                    },
+                  );
+                }
+
+                // Only show loading/error if no conversations
+                if (state.status == ChatStatus.loading) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                if (state.status == ChatStatus.error) {
+                  return Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.error_outline,
+                          size: 80,
+                          color: Colors.red[400],
+                        ),
+                        const SizedBox(height: 16),
+                        Text(
+                          'Failed to load conversations',
+                          style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.grey[600],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        TextButton(
+                          onPressed: () {
+                            context
+                                .read<ChatBloc>()
+                                .add(ChatLoadConversations());
+                          },
+                          child: const Text('Retry'),
+                        ),
+                      ],
+                    ),
+                  );
+                }
+
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.chat_bubble_outline,
+                        size: 80,
+                        color: Colors.grey[400],
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No conversations yet',
+                        style: TextStyle(
+                          fontSize: 18,
+                          color: Colors.grey[600],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Start a new chat!',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[500],
+                        ),
+                      ),
+                    ],
+                  ),
                 );
               },
-            );
-          }
-
-          // Only show loading/error if no conversations
-          if (state.status == ChatStatus.loading) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          if (state.status == ChatStatus.error) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.error_outline,
-                    size: 80,
-                    color: Colors.red[400],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Failed to load conversations',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: () {
-                      context.read<ChatBloc>().add(ChatLoadConversations());
-                    },
-                    child: const Text('Retry'),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          return Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  Icons.chat_bubble_outline,
-                  size: 80,
-                  color: Colors.grey[400],
-                ),
-                const SizedBox(height: 16),
-                Text(
-                  'No conversations yet',
-                  style: TextStyle(
-                    fontSize: 18,
-                    color: Colors.grey[600],
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Start a new chat!',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[500],
-                  ),
-                ),
-              ],
             ),
-          );
-        },
+          ),
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _showNewConversationSheet,
-        child: const Icon(Icons.message),
+      floatingActionButton: Row(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          FloatingActionButton(
+            heroTag: 'new_group',
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const NewGroupScreen()),
+              );
+            },
+            child: const Icon(Icons.group_add),
+          ),
+          const SizedBox(width: 12),
+          FloatingActionButton(
+            heroTag: 'new_chat',
+            onPressed: _showNewConversationSheet,
+            child: const Icon(Icons.message),
+          ),
+        ],
       ),
     );
   }
@@ -311,7 +505,9 @@ class _ConversationTile extends StatelessWidget {
             ),
           Expanded(
             child: Text(
-              lastMessage != null ? _lastMessagePreview : (user.isOnline ? 'online' : 'Tap to chat'),
+              lastMessage != null
+                  ? _lastMessagePreview
+                  : (user.isOnline ? 'online' : 'Tap to chat'),
               style: TextStyle(
                 color: user.isOnline ? AppTheme.onlineStatusColor : Colors.grey,
                 fontSize: 13,
@@ -395,7 +591,8 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: Colors.grey[100],
-                borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                borderRadius:
+                    const BorderRadius.vertical(top: Radius.circular(20)),
               ),
               child: Column(
                 children: [
@@ -421,7 +618,8 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 16),
                     ),
                     onChanged: _onSearchChanged,
                   ),
@@ -455,7 +653,11 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
                         leading: CircleAvatar(
                           backgroundColor: AppTheme.primaryColor,
                           child: Text(
-                            (user.displayName ?? user.email ?? user.phone ?? 'U')[0].toUpperCase(),
+                            (user.displayName ??
+                                    user.email ??
+                                    user.phone ??
+                                    'U')[0]
+                                .toUpperCase(),
                             style: const TextStyle(color: Colors.white),
                           ),
                         ),

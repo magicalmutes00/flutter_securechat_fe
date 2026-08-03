@@ -30,7 +30,8 @@ class User extends Equatable {
   factory User.fromJson(Map<String, dynamic> json) {
     // Handle various response formats
     final id = json['id'] as String? ?? json['_id'] as String? ?? '';
-    final displayName = json['display_name'] as String? ?? json['name'] as String?;
+    final displayName =
+        json['display_name'] as String? ?? json['name'] as String?;
 
     return User(
       id: id,

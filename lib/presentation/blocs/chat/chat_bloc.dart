@@ -7,6 +7,7 @@ import '../../../data/services/api_client.dart';
 import '../../../data/services/local_storage_service.dart';
 import '../../../data/services/notification_service.dart';
 import '../../../data/services/websocket_service.dart';
+import '../../../data/services/e2ee/e2ee_service.dart';
 import 'chat_event.dart';
 import 'chat_state.dart';
 
@@ -19,6 +20,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   StreamSubscription? _messageSubscription;
   StreamSubscription? _typingSubscription;
   StreamSubscription? _statusSubscription;
+  Timer? _typingClearTimer;
 
   String? _currentViewingUserId;
 
@@ -29,6 +31,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatReceiveMessage>(_onReceiveMessage);
     on<ChatUpdateMessageStatus>(_onUpdateMessageStatus);
     on<ChatSendTypingStatus>(_onSendTypingStatus);
+    on<ChatReceiveTypingStatus>(_onReceiveTypingStatus);
+    on<ChatReceiveReceipt>(_onReceiveReceipt);
     on<ChatLoadConversations>(_onLoadConversations);
     on<ChatSearchUsers>(_onSearchUsers);
     on<ChatDeleteMessage>(_onDeleteMessage);
@@ -41,19 +45,75 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     _messageSubscription = _wsService.messageStream.listen((message) {
       add(ChatReceiveMessage(message));
     });
-
     _typingSubscription = _wsService.typingStream.listen((data) {
-      // Handle typing indicator
+      final senderId = data['sender_id'] as String?;
+      final isTyping = data['is_typing'] as bool? ?? false;
+      if (senderId == null) return;
+
+      add(ChatReceiveTypingStatus(senderId: senderId, isTyping: isTyping));
     });
 
     _statusSubscription = _wsService.statusStream.listen((data) {
-      if (data['type'] == 'message_sent') {
+      final type = data['type'] as String?;
+      final me = _wsService.currentUserId;
+
+      if (type == 'message_sent' && data['data'] != null) {
         add(ChatUpdateMessageStatus(
           messageId: data['data']['id'],
           status: 'sent',
         ));
+        return;
+      }
+
+      if (me == null) return;
+
+      final peerId = data['receiver_id'] as String?;
+      if (peerId == null) return;
+
+      if (type == 'delivery_receipt') {
+        add(ChatReceiveReceipt(peerUserId: peerId, status: 'delivered'));
+      } else if (type == 'read_receipt') {
+        add(ChatReceiveReceipt(peerUserId: peerId, status: 'read'));
       }
     });
+
+    // Flush any offline-queued messages as soon as the socket (re)connects.
+    _wsService.connectionStream.listen((connected) {
+      if (connected) {
+        unawaited(_flushOutbox());
+      }
+    });
+  }
+
+  Future<void> _flushOutbox() async {
+    final currentUserId = _wsService.currentUserId;
+    if (currentUserId == null || currentUserId.isEmpty) return;
+
+    final pending = _localStorage.getOutbox(currentUserId);
+    if (pending.isEmpty) return;
+
+    for (final message in pending) {
+      try {
+        final encrypted = await E2eeService.instance.prepareOutgoingText(
+          currentUserId: currentUserId,
+          receiverId: message.receiverId,
+          plaintext: message.content,
+        );
+        final usesSignal = encrypted['encryption'] == 'signal';
+
+        await _apiClient.sendMessage({
+          'receiver_id': message.receiverId,
+          'message_type': message.messageType,
+          'content': usesSignal ? '' : message.content,
+          'encryption': encrypted['encryption'] as String? ?? 'none',
+          'cipher_type': encrypted['cipher_type'],
+          'cipher_body': encrypted['cipher_body'],
+        });
+        await _localStorage.removeFromOutbox(currentUserId, message.id);
+      } catch (_) {
+        // Keep the message queued; a later reconnect will retry it.
+      }
+    }
   }
 
   void setCurrentViewingUser(String? userId) {
@@ -73,12 +133,20 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       currentChatUserId: event.userId,
     ));
 
-    final localMessages = _localStorage.getMessages(currentUserId, event.userId);
+    final localMessages =
+        _localStorage.getMessages(currentUserId, event.userId);
 
     if (localMessages.isNotEmpty && !event.refresh) {
+      // Locally cached messages are stored decrypted, but re-decrypt defensively
+      // in case a previous session persisted ciphertext.
+      final decryptedLocal = <Message>[];
+      for (final m in localMessages) {
+        decryptedLocal.add(await E2eeService.instance
+            .decryptMessage(m, currentUserId: currentUserId));
+      }
       emit(state.copyWith(
         status: ChatStatus.loaded,
-        messages: localMessages,
+        messages: decryptedLocal,
         hasMoreMessages: true,
       ));
     }
@@ -95,12 +163,19 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           .reversed
           .toList();
 
-      await _localStorage.saveMessages(currentUserId, event.userId, newMessages);
+      // Decrypt Signal-encrypted messages fetched from the server.
+      final decryptedMessages = <Message>[];
+      for (final m in newMessages) {
+        decryptedMessages.add(await E2eeService.instance
+            .decryptMessage(m, currentUserId: currentUserId));
+      }
+
+      await _localStorage.saveMessages(
+          currentUserId, event.userId, decryptedMessages);
 
       final existingIds = state.messages.map((m) => m.id).toSet();
-      final uniqueNewMessages = newMessages
-          .where((m) => !existingIds.contains(m.id))
-          .toList();
+      final uniqueNewMessages =
+          decryptedMessages.where((m) => !existingIds.contains(m.id)).toList();
 
       final allMessages = [...state.messages];
       for (final msg in uniqueNewMessages) {
@@ -115,6 +190,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         messages: allMessages,
         hasMoreMessages: newMessages.length >= AppConstants.messagesPageSize,
       ));
+
+      // Mark the peer's messages as read now that the chat is open.
+      if (_wsService.isConnected && currentUserId.isNotEmpty) {
+        _wsService.sendReadReceipt(event.userId, currentUserId);
+      }
     } catch (e) {
       if (state.messages.isEmpty) {
         emit(state.copyWith(
@@ -146,7 +226,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
     List<Message> updatedMessages = [...state.messages, tempMessage];
 
-    Map<String, User> updatedConversations = Map<String, User>.from(state.conversations);
+    Map<String, User> updatedConversations =
+        Map<String, User>.from(state.conversations);
     if (!state.conversations.containsKey(event.receiverId)) {
       final newUser = User(
         id: event.receiverId,
@@ -168,23 +249,46 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ));
 
     if (currentUserId.isNotEmpty) {
-      await _localStorage.addMessage(currentUserId, event.receiverId, tempMessage);
-      await _localStorage.saveConversations(currentUserId, updatedConversations, newLastMessages);
+      await _localStorage.addMessage(
+          currentUserId, event.receiverId, tempMessage);
+      await _localStorage.saveConversations(
+          currentUserId, updatedConversations, newLastMessages);
     }
 
     try {
+      final encrypted = await E2eeService.instance.prepareOutgoingText(
+        currentUserId: currentUserId,
+        receiverId: event.receiverId,
+        plaintext: event.content,
+      );
+      final usesSignal = encrypted['encryption'] == 'signal';
+
       if (_wsService.isConnected) {
         _wsService.sendMessage(
           receiverId: event.receiverId,
           messageType: AppConstants.messageTypeText,
-          content: event.content,
+          content: usesSignal ? '' : event.content,
+          encryption: encrypted['encryption'] as String? ?? 'none',
+          cipherType: encrypted['cipher_type'] as int?,
+          cipherBody: encrypted['cipher_body'] as String?,
         );
       } else {
-        await _apiClient.sendMessage({
-          'receiver_id': event.receiverId,
-          'message_type': AppConstants.messageTypeText,
-          'content': event.content,
-        });
+        // Try the REST fallback; if the device is fully offline, queue the
+        // message for delivery once the socket to the server reconnects.
+        try {
+          await _apiClient.sendMessage({
+            'receiver_id': event.receiverId,
+            'message_type': AppConstants.messageTypeText,
+            'content': usesSignal ? '' : event.content,
+            'encryption': encrypted['encryption'] as String? ?? 'none',
+            'cipher_type': encrypted['cipher_type'],
+            'cipher_body': encrypted['cipher_body'],
+          });
+        } catch (_) {
+          if (currentUserId.isNotEmpty) {
+            await _localStorage.enqueueOutbox(currentUserId, tempMessage);
+          }
+        }
       }
     } catch (e) {
       // Already updated UI optimistically
@@ -197,13 +301,32 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   ) async {
     emit(state.copyWith(status: ChatStatus.sending));
 
+    final currentUserId = _wsService.currentUserId ?? '';
+
     try {
+      // Encrypt the media bytes end-to-end before they leave the device.
+      final encryptedMedia =
+          await E2eeService.instance.encryptMediaFile(event.filePath);
+
       final uploadResult = await _apiClient.uploadFile(
-        event.filePath,
+        encryptedMedia.cipherPath,
         event.messageType,
       );
 
       if (uploadResult['success'] == true) {
+        // Deliver the media key inside a Signal-encrypted envelope so the
+        // server only ever sees the ciphertext blob.
+        final crypto = await E2eeService.instance.encryptEnvelopeForPeer(
+          currentUserId: currentUserId,
+          receiverId: event.receiverId,
+          envelope: {
+            'k': encryptedMedia.keyB64,
+            'iv': encryptedMedia.nonceB64,
+            'text': '',
+          },
+        );
+
+        final usesSignal = crypto?['encryption'] == 'signal';
         if (_wsService.isConnected) {
           _wsService.sendMessage(
             receiverId: event.receiverId,
@@ -213,6 +336,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
             fileName: uploadResult['file_name'],
             fileSize: uploadResult['file_size'],
             mediaType: uploadResult['media_type'],
+            encryption: usesSignal ? 'signal' : 'none',
+            cipherType: crypto?['cipher_type'] as int?,
+            cipherBody: crypto?['cipher_body'] as String?,
           );
         }
       }
@@ -226,14 +352,18 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
   }
 
-  void _onReceiveMessage(
+  Future<void> _onReceiveMessage(
     ChatReceiveMessage event,
     Emitter<ChatState> emit,
-  ) {
-    final message = event.message;
-    final currentUserId = _wsService.currentUserId;
+  ) async {
+    var message = event.message;
+    final currentUserId = _wsService.currentUserId ?? '';
 
-    if (currentUserId != null && message.senderId == currentUserId) {
+    // Decrypt Signal-encrypted messages before display/storage.
+    message = await E2eeService.instance
+        .decryptMessage(message, currentUserId: currentUserId);
+
+    if (currentUserId.isNotEmpty && message.senderId == currentUserId) {
       return;
     }
 
@@ -245,6 +375,14 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     final isViewingThisChat = state.currentChatUserId != null &&
         (message.senderId == state.currentChatUserId ||
             message.receiverId == state.currentChatUserId);
+
+    // Auto-send a read receipt when the chat is open so the sender sees
+    // their messages flip to "read".
+    if (isViewingThisChat &&
+        message.senderId != currentUserId &&
+        _wsService.isConnected) {
+      _wsService.sendReadReceipt(message.senderId, currentUserId);
+    }
 
     if (!isViewingThisChat) {
       _notificationService.showLocalNotification(
@@ -288,9 +426,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       conversations: updatedConversations,
     ));
 
-    if (currentUserId != null) {
+    if (currentUserId.isNotEmpty) {
       _localStorage.addMessage(currentUserId, message.senderId, message);
-      _localStorage.saveConversations(currentUserId, updatedConversations, newLastMessages);
+      _localStorage.saveConversations(
+          currentUserId, updatedConversations, newLastMessages);
     }
   }
 
@@ -330,6 +469,48 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     _wsService.sendTyping(event.receiverId, event.isTyping);
   }
 
+  void _onReceiveTypingStatus(
+    ChatReceiveTypingStatus event,
+    Emitter<ChatState> emit,
+  ) {
+    // Only reflect typing for the currently open chat.
+    if (state.currentChatUserId == null ||
+        event.senderId != state.currentChatUserId) {
+      return;
+    }
+
+    emit(state.copyWith(
+      isTyping: event.isTyping,
+      typingUserId: event.isTyping ? event.senderId : null,
+    ));
+
+    if (event.isTyping) {
+      _typingClearTimer?.cancel();
+      _typingClearTimer = Timer(const Duration(seconds: 4), () {
+        if (state.isTyping) {
+          emit(state.copyWith(isTyping: false, typingUserId: null));
+        }
+      });
+    } else {
+      _typingClearTimer?.cancel();
+    }
+  }
+
+  void _onReceiveReceipt(
+    ChatReceiveReceipt event,
+    Emitter<ChatState> emit,
+  ) {
+    final me = _wsService.currentUserId;
+    if (me == null) return;
+
+    final updated = state.messages
+        .map((m) => m.senderId == me && m.receiverId == event.peerUserId
+            ? m.copyWith(status: event.status)
+            : m)
+        .toList();
+    emit(state.copyWith(messages: updated));
+  }
+
   Future<void> _onLoadConversations(
     ChatLoadConversations event,
     Emitter<ChatState> emit,
@@ -361,12 +542,14 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         conversations[user.id] = user;
 
         if (conv['last_message'] != null) {
-          final lastMsg = Message.fromJson(conv['last_message'] as Map<String, dynamic>);
+          final lastMsg =
+              Message.fromJson(conv['last_message'] as Map<String, dynamic>);
           lastMessages[user.id] = lastMsg;
         }
       }
 
-      await _localStorage.saveConversations(currentUserId, conversations, lastMessages);
+      await _localStorage.saveConversations(
+          currentUserId, conversations, lastMessages);
       await _localStorage.setLastSyncTime(currentUserId);
 
       emit(state.copyWith(
@@ -397,7 +580,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
     try {
       final results = await _apiClient.searchUsers(event.query);
-      final users = results.map((json) => User.fromJson(json as Map<String, dynamic>)).toList();
+      final users = results
+          .map((json) => User.fromJson(json as Map<String, dynamic>))
+          .toList();
 
       emit(state.copyWith(
         searchResults: users,
@@ -418,14 +603,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     try {
       await _apiClient.deleteMessage(event.messageId);
 
-      final updatedMessages = state.messages
-          .where((m) => m.id != event.messageId)
-          .toList();
+      final updatedMessages =
+          state.messages.where((m) => m.id != event.messageId).toList();
 
       final updatedLastMessages = Map<String, Message>.from(state.lastMessages);
       if (state.lastMessages[event.otherUserId]?.id == event.messageId) {
         final remaining = updatedMessages
-            .where((m) => m.senderId == event.otherUserId || m.receiverId == event.otherUserId)
+            .where((m) =>
+                m.senderId == event.otherUserId ||
+                m.receiverId == event.otherUserId)
             .toList();
         if (remaining.isNotEmpty) {
           updatedLastMessages[event.otherUserId] = remaining.last;

@@ -6,11 +6,16 @@ import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
+import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
+import '../../data/services/api_client.dart';
+import '../../data/services/rtc/call_manager.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/security_code_sheet.dart';
+import 'call_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final User user;
@@ -33,6 +38,28 @@ class _ChatScreenState extends State<ChatScreen> {
       widget.user.email ??
       widget.user.phone ??
       'Unknown user';
+
+  void _startCall({required bool isVideo}) {
+    final name = _chatTitle;
+    CallManager.instance.nameResolver = (peerId) => name;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => CallScreen(
+          peerId: widget.user.id,
+          peerName: name,
+          isVideoCall: isVideo,
+        ),
+      ),
+    );
+  }
+
+  void _showSearchDialog(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _MessageSearchSheet(peerUserId: widget.user.id),
+    );
+  }
 
   @override
   void initState() {
@@ -63,9 +90,9 @@ class _ChatScreenState extends State<ChatScreen> {
     if (_messageController.text.trim().isEmpty) return;
 
     context.read<ChatBloc>().add(ChatSendTextMessage(
-      receiverId: widget.user.id,
-      content: _messageController.text.trim(),
-    ));
+          receiverId: widget.user.id,
+          content: _messageController.text.trim(),
+        ));
 
     _messageController.clear();
   }
@@ -75,10 +102,10 @@ class _ChatScreenState extends State<ChatScreen> {
       final XFile? image = await _imagePicker.pickImage(source: source);
       if (image != null && mounted) {
         context.read<ChatBloc>().add(ChatSendFileMessage(
-          receiverId: widget.user.id,
-          filePath: image.path,
-          messageType: AppConstants.messageTypeImage,
-        ));
+              receiverId: widget.user.id,
+              filePath: image.path,
+              messageType: AppConstants.messageTypeImage,
+            ));
       }
     } catch (e) {
       if (mounted) {
@@ -91,13 +118,14 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _pickVideo() async {
     try {
-      final XFile? video = await _imagePicker.pickVideo(source: ImageSource.camera);
+      final XFile? video =
+          await _imagePicker.pickVideo(source: ImageSource.camera);
       if (video != null && mounted) {
         context.read<ChatBloc>().add(ChatSendFileMessage(
-          receiverId: widget.user.id,
-          filePath: video.path,
-          messageType: AppConstants.messageTypeVideo,
-        ));
+              receiverId: widget.user.id,
+              filePath: video.path,
+              messageType: AppConstants.messageTypeVideo,
+            ));
       }
     } catch (e) {
       if (mounted) {
@@ -115,10 +143,10 @@ class _ChatScreenState extends State<ChatScreen> {
         final file = result.files.first;
         if (file.path != null) {
           context.read<ChatBloc>().add(ChatSendFileMessage(
-            receiverId: widget.user.id,
-            filePath: file.path!,
-            messageType: AppConstants.messageTypeDocument,
-          ));
+                receiverId: widget.user.id,
+                filePath: file.path!,
+                messageType: AppConstants.messageTypeDocument,
+              ));
         }
       }
     } catch (e) {
@@ -145,7 +173,8 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.camera_alt, color: AppTheme.primaryColor),
+              leading:
+                  const Icon(Icons.camera_alt, color: AppTheme.primaryColor),
               title: const Text('Camera'),
               onTap: () {
                 Navigator.pop(context);
@@ -161,7 +190,8 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.insert_drive_file, color: AppTheme.primaryColor),
+              leading: const Icon(Icons.insert_drive_file,
+                  color: AppTheme.primaryColor),
               title: const Text('Document'),
               onTap: () {
                 Navigator.pop(context);
@@ -210,16 +240,31 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   Text(
                     _chatTitle,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600),
                   ),
-                  Text(
-                    widget.user.isOnline ? 'online' : 'offline',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: widget.user.isOnline
-                          ? AppTheme.onlineStatusColor
-                          : AppTheme.offlineStatusColor,
-                    ),
+                  BlocBuilder<ChatBloc, ChatState>(
+                    builder: (context, state) {
+                      if (state.isTyping) {
+                        return const Text(
+                          'typing...',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppTheme.primaryColor,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        );
+                      }
+                      return Text(
+                        widget.user.isOnline ? 'online' : 'offline',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: widget.user.isOnline
+                              ? AppTheme.onlineStatusColor
+                              : AppTheme.offlineStatusColor,
+                        ),
+                      );
+                    },
                   ),
                 ],
               ),
@@ -229,15 +274,43 @@ class _ChatScreenState extends State<ChatScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.call),
-            onPressed: () {},
+            onPressed: () => _startCall(isVideo: false),
           ),
           IconButton(
             icon: const Icon(Icons.videocam),
-            onPressed: () {},
+            onPressed: () => _startCall(isVideo: true),
           ),
-          IconButton(
+          PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert),
-            onPressed: () {},
+            onSelected: (value) {
+              if (value == 'search') {
+                _showSearchDialog(context);
+              } else if (value == 'security') {
+                showModalBottomSheet(
+                  context: context,
+                  builder: (context) =>
+                      SecurityCodeSheet(peerUserId: widget.user.id),
+                );
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(
+                value: 'search',
+                child: ListTile(
+                  leading: Icon(Icons.search),
+                  title: Text('Search in conversation'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              PopupMenuItem(
+                value: 'security',
+                child: ListTile(
+                  leading: Icon(Icons.shield),
+                  title: Text('View safety number'),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -246,7 +319,8 @@ class _ChatScreenState extends State<ChatScreen> {
           Expanded(
             child: BlocBuilder<ChatBloc, ChatState>(
               builder: (context, state) {
-                if (state.status == ChatStatus.loading && state.messages.isEmpty) {
+                if (state.status == ChatStatus.loading &&
+                    state.messages.isEmpty) {
                   return const Center(child: CircularProgressIndicator());
                 }
 
@@ -271,7 +345,9 @@ class _ChatScreenState extends State<ChatScreen> {
                         const SizedBox(height: 8),
                         TextButton(
                           onPressed: () {
-                            context.read<ChatBloc>().add(ChatLoadMessages(userId: widget.user.id));
+                            context
+                                .read<ChatBloc>()
+                                .add(ChatLoadMessages(userId: widget.user.id));
                           },
                           child: const Text('Retry'),
                         ),
@@ -314,12 +390,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 return ListView.builder(
                   controller: _scrollController,
                   reverse: true,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                   itemCount: state.messages.length,
                   itemBuilder: (context, index) {
                     // With reverse:true, index 0 is at the BOTTOM (newest)
                     // So we reverse to show oldest at top
-                    final message = state.messages[state.messages.length - 1 - index];
+                    final message =
+                        state.messages[state.messages.length - 1 - index];
                     return MessageBubble(
                       message: message,
                       isMe: message.senderId == widget.user.id,
@@ -345,7 +423,8 @@ class _ChatScreenState extends State<ChatScreen> {
               child: Row(
                 children: [
                   IconButton(
-                    icon: const Icon(Icons.attach_file, color: AppTheme.primaryColor),
+                    icon: const Icon(Icons.attach_file,
+                        color: AppTheme.primaryColor),
                     onPressed: _showAttachmentOptions,
                   ),
                   Expanded(
@@ -370,15 +449,15 @@ class _ChatScreenState extends State<ChatScreen> {
                         if (value.isNotEmpty && !_isTyping) {
                           _isTyping = true;
                           context.read<ChatBloc>().add(ChatSendTypingStatus(
-                            receiverId: widget.user.id,
-                            isTyping: true,
-                          ));
+                                receiverId: widget.user.id,
+                                isTyping: true,
+                              ));
                         } else if (value.isEmpty && _isTyping) {
                           _isTyping = false;
                           context.read<ChatBloc>().add(ChatSendTypingStatus(
-                            receiverId: widget.user.id,
-                            isTyping: false,
-                          ));
+                                receiverId: widget.user.id,
+                                isTyping: false,
+                              ));
                         }
                       },
                     ),
@@ -387,7 +466,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   CircleAvatar(
                     backgroundColor: AppTheme.primaryColor,
                     child: IconButton(
-                      icon: const Icon(Icons.send, color: Colors.white, size: 20),
+                      icon:
+                          const Icon(Icons.send, color: Colors.white, size: 20),
                       onPressed: _sendMessage,
                     ),
                   ),
@@ -398,5 +478,176 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
     );
+  }
+}
+
+class _MessageSearchSheet extends StatefulWidget {
+  final String peerUserId;
+
+  const _MessageSearchSheet({required this.peerUserId});
+
+  @override
+  State<_MessageSearchSheet> createState() => _MessageSearchSheetState();
+}
+
+class _MessageSearchSheetState extends State<_MessageSearchSheet> {
+  final TextEditingController _searchController = TextEditingController();
+  final ApiClient _apiClient = ApiClient();
+  List<Message> _results = [];
+  bool _isSearching = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _runSearch(String query) async {
+    final trimmed = query.trim();
+    if (trimmed.isEmpty) {
+      setState(() {
+        _results = [];
+        _error = null;
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearching = true;
+      _error = null;
+    });
+
+    try {
+      final raw = await _apiClient.searchMessages(trimmed);
+      final matches = raw
+          .map((e) => Message.fromJson(e as Map<String, dynamic>))
+          .where((m) =>
+              m.senderId == widget.peerUserId ||
+              m.receiverId == widget.peerUserId)
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _results = matches;
+        _isSearching = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isSearching = false;
+        _error = 'Search failed. Please try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 16,
+        right: 16,
+        top: 16,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _searchController,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: 'Search messages...',
+              prefixIcon: const Icon(Icons.search),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(24),
+                borderSide: BorderSide.none,
+              ),
+              filled: true,
+              fillColor: Colors.grey[100],
+            ),
+            onChanged: _runSearch,
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: _isSearching
+                ? const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                : _error != null
+                    ? Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Center(
+                          child: Text(
+                            _error!,
+                            style: TextStyle(color: Colors.grey[600]),
+                          ),
+                        ),
+                      )
+                    : _results.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.all(24),
+                            child: Center(
+                              child: Text(
+                                _searchController.text.trim().isEmpty
+                                    ? 'Type to search in this conversation.'
+                                    : 'No matching messages.',
+                                style: TextStyle(color: Colors.grey[600]),
+                              ),
+                            ),
+                          )
+                        : ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: _results.length,
+                            itemBuilder: (context, index) {
+                              final message = _results[index];
+                              final isMe =
+                                  message.senderId != widget.peerUserId;
+                              return ListTile(
+                                dense: true,
+                                leading: Icon(
+                                  message.isTextMessage
+                                      ? Icons.chat_bubble_outline
+                                      : Icons.attach_file,
+                                  color: AppTheme.primaryColor,
+                                  size: 20,
+                                ),
+                                title: Text(
+                                  message.content.isEmpty
+                                      ? '[Media message]'
+                                      : message.content,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: Text(
+                                  '${isMe ? 'You' : 'Them'} · '
+                                  '${_formatTime(message.createdAt)}',
+                                ),
+                                onTap: () {
+                                  final chatBloc = context.read<ChatBloc>();
+                                  chatBloc
+                                      .setCurrentViewingUser(widget.peerUserId);
+                                  Navigator.pop(context);
+                                },
+                              );
+                            },
+                          ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatTime(DateTime time) {
+    final now = DateTime.now();
+    if (time.year == now.year &&
+        time.month == now.month &&
+        time.day == now.day) {
+      final h = time.hour.toString().padLeft(2, '0');
+      final m = time.minute.toString().padLeft(2, '0');
+      return '$h:$m';
+    }
+    return '${time.month}/${time.day}/${time.year}';
   }
 }

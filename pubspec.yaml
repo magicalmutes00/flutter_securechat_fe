@@ -47,11 +47,23 @@ dependencies:
   
   # Security
   flutter_secure_storage: ^9.0.0
-  encrypt: ^5.0.3
+  crypto: ^3.0.3
+  convert: ^3.1.2
+  fixnum: ^1.1.0
+  pointycastle: ^4.0.0
+
+  # Contacts
+  contacts_service: ^0.6.3
+  permission_handler: ^11.0.0
 
   # Notifications
   flutter_local_notifications: ^18.0.1
+  libsignal_protocol_dart: ^0.8.2
 
+  # WebRTC (voice/video calls)
+  flutter_webrtc: ^1.6.0
+  firebase_messaging: ^16.5.0
+  firebase_core: ^4.13.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

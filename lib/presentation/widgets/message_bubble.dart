@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:intl/intl.dart';
-import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/message_model.dart';
+import 'encrypted_image.dart';
 
 class MessageBubble extends StatefulWidget {
   final Message message;
@@ -74,7 +73,8 @@ class _MessageBubbleState extends State<MessageBubble>
               onTap: () {
                 Navigator.pop(context);
                 if (widget.message.isTextMessage) {
-                  Clipboard.setData(ClipboardData(text: widget.message.content));
+                  Clipboard.setData(
+                      ClipboardData(text: widget.message.content));
                 }
               },
             ),
@@ -115,8 +115,10 @@ class _MessageBubbleState extends State<MessageBubble>
               borderRadius: BorderRadius.only(
                 topLeft: const Radius.circular(16),
                 topRight: const Radius.circular(16),
-                bottomLeft: widget.isMe ? const Radius.circular(16) : Radius.zero,
-                bottomRight: widget.isMe ? Radius.zero : const Radius.circular(16),
+                bottomLeft:
+                    widget.isMe ? const Radius.circular(16) : Radius.zero,
+                bottomRight:
+                    widget.isMe ? Radius.zero : const Radius.circular(16),
               ),
               boxShadow: [
                 BoxShadow(
@@ -147,24 +149,7 @@ class _MessageBubbleState extends State<MessageBubble>
         style: const TextStyle(fontSize: 15),
       );
     } else if (widget.message.isImageMessage) {
-      return ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: CachedNetworkImage(
-          imageUrl: '${AppConstants.baseUrl}${widget.message.filePath}',
-          placeholder: (context, url) => Container(
-            height: 200,
-            width: 200,
-            color: Colors.grey[300],
-            child: const Center(child: CircularProgressIndicator()),
-          ),
-          errorWidget: (context, url, error) => Container(
-            height: 200,
-            width: 200,
-            color: Colors.grey[300],
-            child: const Icon(Icons.broken_image, size: 50),
-          ),
-        ),
-      );
+      return EncryptedImage(message: widget.message);
     } else if (widget.message.isVideoMessage) {
       return Container(
         height: 150,
@@ -174,7 +159,8 @@ class _MessageBubbleState extends State<MessageBubble>
           borderRadius: BorderRadius.circular(12),
         ),
         child: const Center(
-          child: Icon(Icons.play_circle_fill, size: 50, color: AppTheme.primaryColor),
+          child: Icon(Icons.play_circle_fill,
+              size: 50, color: AppTheme.primaryColor),
         ),
       );
     } else if (widget.message.isAudioMessage) {

@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'data/services/local_storage_service.dart';
 import 'data/services/notification_service.dart';
+import 'data/services/rtc/incoming_call_router.dart';
 import 'presentation/blocs/auth/auth_bloc.dart';
 import 'presentation/blocs/auth/auth_event.dart';
 import 'presentation/blocs/auth/auth_state.dart';
@@ -46,8 +47,13 @@ class SecureChatApp extends StatelessWidget {
       ],
       child: MaterialApp(
         title: 'SecureChat',
+        navigatorKey: appNavigatorKey,
         debugShowCheckedModeBanner: false,
         theme: AppTheme.lightTheme,
+        builder: (context, child) {
+          IncomingCallRouter.init(context);
+          return child!;
+        },
         home: BlocBuilder<AuthBloc, AuthState>(
           builder: (context, state) {
             if (state.status == AuthStatus.initial ||

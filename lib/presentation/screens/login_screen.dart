@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/theme/app_theme.dart';
 import '../blocs/auth/auth_bloc.dart';
@@ -13,21 +13,23 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStateMixin {
+class _LoginScreenState extends State<LoginScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   // Email/Password controllers
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _displayNameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
-  final TextEditingController _confirmPasswordController = TextEditingController();
+  final TextEditingController _confirmPasswordController =
+      TextEditingController();
   bool _isEmailRegisterMode = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
 
   // Phone controllers
   final TextEditingController _phoneController = TextEditingController();
-  bool _isPhoneRegisterMode = false;
+  final TextEditingController _otpController = TextEditingController();
 
   @override
   void initState() {
@@ -43,6 +45,7 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
     _passwordController.dispose();
     _confirmPasswordController.dispose();
     _phoneController.dispose();
+    _otpController.dispose();
     super.dispose();
   }
 
@@ -82,34 +85,34 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       }
       if (password.length < 6) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Password must be at least 6 characters')),
+          const SnackBar(
+              content: Text('Password must be at least 6 characters')),
         );
         return;
       }
       context.read<AuthBloc>().add(AuthEmailRegisterRequested(
-        email: email,
-        password: password,
-        displayName: _displayNameController.text.trim().isNotEmpty
-            ? _displayNameController.text.trim()
-            : null,
-      ));
+            email: email,
+            password: password,
+            displayName: _displayNameController.text.trim().isNotEmpty
+                ? _displayNameController.text.trim()
+                : null,
+          ));
     } else {
       context.read<AuthBloc>().add(AuthEmailLoginRequested(
-        email: email,
-        password: password,
-      ));
+            email: email,
+            password: password,
+          ));
     }
   }
 
   bool _isValidEmail(String email) {
-    return RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$').hasMatch(email);
+    return RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+        .hasMatch(email);
   }
 
-  // Phone Auth Methods
-  void _submitPhoneAuth() {
+  // Phone OTP Auth Methods
+  void _sendOtp() {
     final phone = _phoneController.text.trim();
-    final password = _passwordController.text;
-
     if (phone.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please enter your phone number')),
@@ -117,33 +120,35 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
       return;
     }
 
-    if (password.isEmpty) {
+    context.read<AuthBloc>().add(AuthOtpRequested(phone: phone));
+  }
+
+  void _verifyOtp() {
+    final state = context.read<AuthBloc>().state;
+    final code = _otpController.text.trim();
+    final phone = state.otpPhone;
+    final correlationId = state.correlationId;
+
+    if (code.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your password')),
+        const SnackBar(content: Text('Please enter the verification code')),
       );
       return;
     }
 
-    if (_isPhoneRegisterMode) {
-      if (password.length < 6) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Password must be at least 6 characters')),
-        );
-        return;
-      }
-      context.read<AuthBloc>().add(AuthPhoneRegisterRequested(
-        phone: phone,
-        password: password,
-        displayName: _displayNameController.text.trim().isNotEmpty
-            ? _displayNameController.text.trim()
-            : null,
-      ));
-    } else {
-      context.read<AuthBloc>().add(AuthPhoneLoginRequested(
-        phone: phone,
-        password: password,
-      ));
+    if (phone == null || correlationId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please request a code first')),
+      );
+      return;
     }
+
+    context.read<AuthBloc>().add(AuthOtpVerifyRequested(
+          phone: phone,
+          countryCode: 91,
+          otpCode: code,
+          correlationId: correlationId,
+        ));
   }
 
   @override
@@ -240,17 +245,19 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Text(
-                _isEmailRegisterMode ? 'Already have an account?' : "Don't have an account?",
+                _isEmailRegisterMode
+                    ? 'Already have an account?'
+                    : "Don't have an account?",
                 style: TextStyle(color: Colors.grey[600]),
               ),
               TextButton(
-                onPressed: () => setState(() => _isEmailRegisterMode = !_isEmailRegisterMode),
+                onPressed: () => setState(
+                    () => _isEmailRegisterMode = !_isEmailRegisterMode),
                 child: Text(_isEmailRegisterMode ? 'Login' : 'Register'),
               ),
             ],
           ),
           const SizedBox(height: 24),
-
           if (_isEmailRegisterMode) ...[
             TextField(
               controller: _displayNameController,
@@ -263,7 +270,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             ),
             const SizedBox(height: 16),
           ],
-
           TextField(
             controller: _emailController,
             keyboardType: TextInputType.emailAddress,
@@ -275,7 +281,6 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
             ),
           ),
           const SizedBox(height: 16),
-
           TextField(
             controller: _passwordController,
             obscureText: _obscurePassword,
@@ -284,12 +289,13 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
               prefixIcon: const Icon(Icons.lock),
               border: const OutlineInputBorder(),
               suffixIcon: IconButton(
-                icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
-                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                icon: Icon(
+                    _obscurePassword ? Icons.visibility : Icons.visibility_off),
+                onPressed: () =>
+                    setState(() => _obscurePassword = !_obscurePassword),
               ),
             ),
           ),
-
           if (_isEmailRegisterMode) ...[
             const SizedBox(height: 16),
             TextField(
@@ -300,17 +306,19 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
                 prefixIcon: const Icon(Icons.lock_outline),
                 border: const OutlineInputBorder(),
                 suffixIcon: IconButton(
-                  icon: Icon(_obscureConfirmPassword ? Icons.visibility : Icons.visibility_off),
-                  onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
+                  icon: Icon(_obscureConfirmPassword
+                      ? Icons.visibility
+                      : Icons.visibility_off),
+                  onPressed: () => setState(
+                      () => _obscureConfirmPassword = !_obscureConfirmPassword),
                 ),
               ),
             ),
           ],
-
           const SizedBox(height: 24),
-
           ElevatedButton(
-            onPressed: state.status == AuthStatus.loading ? null : _submitEmailAuth,
+            onPressed:
+                state.status == AuthStatus.loading ? null : _submitEmailAuth,
             style: ElevatedButton.styleFrom(
               padding: const EdgeInsets.symmetric(vertical: 16),
             ),
@@ -334,85 +342,97 @@ class _LoginScreenState extends State<LoginScreen> with SingleTickerProviderStat
   }
 
   Widget _buildPhoneTab(AuthState state) {
+    final isOtpStep = state.otpPhone != null;
+    final isSending = state.status == AuthStatus.loading;
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(
-                _isPhoneRegisterMode ? 'Already have an account?' : "Don't have an account?",
-                style: TextStyle(color: Colors.grey[600]),
-              ),
-              TextButton(
-                onPressed: () => setState(() => _isPhoneRegisterMode = !_isPhoneRegisterMode),
-                child: Text(_isPhoneRegisterMode ? 'Login' : 'Register'),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-
-          if (_isPhoneRegisterMode) ...[
+          if (!isOtpStep) ...[
             TextField(
-              controller: _displayNameController,
+              controller: _phoneController,
+              keyboardType: TextInputType.phone,
               decoration: const InputDecoration(
-                labelText: 'Display Name',
-                hintText: 'Your name',
-                prefixIcon: Icon(Icons.person),
+                labelText: 'Phone Number',
+                hintText: '+1234567890',
+                prefixIcon: Icon(Icons.phone),
                 border: OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 16),
-          ],
-
-          TextField(
-            controller: _phoneController,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(
-              labelText: 'Phone Number',
-              hintText: '+1234567890',
-              prefixIcon: Icon(Icons.phone),
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-
-          TextField(
-            controller: _passwordController,
-            obscureText: _obscurePassword,
-            decoration: InputDecoration(
-              labelText: 'Password',
-              prefixIcon: const Icon(Icons.lock),
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
-                onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+            const SizedBox(height: 24),
+            ElevatedButton(
+              onPressed: isSending ? null : _sendOtp,
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
               ),
+              child: isSending
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text('Send OTP', style: TextStyle(fontSize: 16)),
             ),
-          ),
-
-          const SizedBox(height: 24),
-
-          ElevatedButton(
-            onPressed: state.status == AuthStatus.loading ? null : _submitPhoneAuth,
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
+          ] else ...[
+            Text(
+              'Enter the 6-digit code sent to\n${state.otpPhone ?? ''}',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
             ),
-            child: state.status == AuthStatus.loading
-                ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : Text(
-                    _isPhoneRegisterMode ? 'Register' : 'Login',
-                    style: const TextStyle(fontSize: 16),
-                  ),
-          ),
+            const SizedBox(height: 24),
+            TextField(
+              controller: _otpController,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 22, letterSpacing: 8),
+              decoration: const InputDecoration(
+                labelText: 'Verification Code',
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _verifyOtp(),
+            ),
+            if (state.devOtpCode != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Dev code: ${state.devOtpCode}',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12, color: AppTheme.accentColor),
+              ),
+              TextButton(
+                onPressed: () {
+                  _otpController.text = state.devOtpCode ?? '';
+                },
+                child: const Text('Auto-fill'),
+              ),
+            ],
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: isSending ? null : _verifyOtp,
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: isSending
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Text('Verify & Continue',
+                      style: TextStyle(fontSize: 16)),
+            ),
+            TextButton(
+              onPressed: isSending ? null : _sendOtp,
+              child: const Text('Resend code'),
+            ),
+          ],
         ],
       ),
     );
