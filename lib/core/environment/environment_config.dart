@@ -10,7 +10,7 @@
 class EnvironmentConfig {
   EnvironmentConfig._();
 
-  static const String _defaultBaseUrl = 'http://localhost:8080';
+  static const String _defaultBaseUrl = 'http://100.110.146.20:8081';
   static const String _defaultWsPath = '/ws';
 
   /// Base URL of the SecureChat backend (REST + WS host).

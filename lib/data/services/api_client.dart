@@ -82,6 +82,21 @@ class ApiClient {
   }
 
   // Auth Methods
+  Future<Map<String, dynamic>> exchangeFirebaseToken(String idToken) async {
+    try {
+      final response = await _dio.post(
+        '/api/auth/public/verify-firebase-token',
+        data: {'id_token': idToken},
+      );
+      return response.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      if (e.response != null) {
+        return e.response!.data as Map<String, dynamic>;
+      }
+      throw Exception('Network error: Unable to connect to server');
+    }
+  }
+
   Future<Map<String, dynamic>> registerWithEmail({
     required String email,
     required String password,

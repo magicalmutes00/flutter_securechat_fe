@@ -111,6 +111,13 @@ class _LoginScreenState extends State<LoginScreen>
   }
 
   // Phone OTP Auth Methods
+  String _normalizePhone(String phone) {
+    final trimmed = phone.trim();
+    if (trimmed.startsWith('+')) return trimmed;
+    // Default to India country code when no international prefix is given.
+    return '+91$trimmed';
+  }
+
   void _sendOtp() {
     final phone = _phoneController.text.trim();
     if (phone.isEmpty) {
@@ -120,14 +127,18 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    context.read<AuthBloc>().add(AuthOtpRequested(phone: phone));
+    context
+        .read<AuthBloc>()
+        .add(AuthFirebaseOtpRequested(phone: _normalizePhone(phone)));
+  }
+
+  void _signInWithGoogle() {
+    context.read<AuthBloc>().add(AuthGoogleSignInRequested());
   }
 
   void _verifyOtp() {
     final state = context.read<AuthBloc>().state;
     final code = _otpController.text.trim();
-    final phone = state.otpPhone;
-    final correlationId = state.correlationId;
 
     if (code.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -136,19 +147,16 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    if (phone == null || correlationId == null) {
+    if (state.verificationId == null || state.verificationId!.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please request a code first')),
       );
       return;
     }
 
-    context.read<AuthBloc>().add(AuthOtpVerifyRequested(
-          phone: phone,
-          countryCode: 91,
-          otpCode: code,
-          correlationId: correlationId,
-        ));
+    context
+        .read<AuthBloc>()
+        .add(AuthFirebaseOtpVerifyRequested(otpCode: code));
   }
 
   @override
@@ -225,6 +233,35 @@ class _LoginScreenState extends State<LoginScreen>
                         _buildEmailTab(state),
                         _buildPhoneTab(state),
                       ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Expanded(child: Divider()),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Text(
+                          'or',
+                          style: TextStyle(color: Colors.grey[600]),
+                        ),
+                      ),
+                      const Expanded(child: Divider()),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton(
+                    onPressed: state.status == AuthStatus.loading
+                        ? null
+                        : _signInWithGoogle,
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      side: BorderSide(color: Colors.grey.shade400),
+                    ),
+                    child: const Text(
+                      'Continue with Google',
+                      style: TextStyle(fontSize: 16),
                     ),
                   ),
                 ],
@@ -396,20 +433,6 @@ class _LoginScreenState extends State<LoginScreen>
               ),
               onSubmitted: (_) => _verifyOtp(),
             ),
-            if (state.devOtpCode != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                'Dev code: ${state.devOtpCode}',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 12, color: AppTheme.accentColor),
-              ),
-              TextButton(
-                onPressed: () {
-                  _otpController.text = state.devOtpCode ?? '';
-                },
-                child: const Text('Auto-fill'),
-              ),
-            ],
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: isSending ? null : _verifyOtp,

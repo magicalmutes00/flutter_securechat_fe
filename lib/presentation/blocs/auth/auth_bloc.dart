@@ -1,6 +1,9 @@
+import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
+import '../../../data/services/firebase_auth_service.dart';
 import '../../../data/services/local_storage_service.dart';
 import '../../../data/services/websocket_service.dart';
 import 'auth_event.dart';
@@ -10,6 +13,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
   final LocalStorageService _localStorage = LocalStorageService();
+  final FirebaseAuthService _firebaseAuthService =
+      FirebaseAuthService.instance;
 
   AuthBloc() : super(const AuthState()) {
     on<AuthCheckRequested>(_onAuthCheckRequested);
@@ -17,8 +22,9 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthEmailRegisterRequested>(_onAuthEmailRegisterRequested);
     on<AuthPhoneLoginRequested>(_onAuthPhoneLoginRequested);
     on<AuthPhoneRegisterRequested>(_onAuthPhoneRegisterRequested);
-    on<AuthOtpRequested>(_onAuthOtpRequested);
-    on<AuthOtpVerifyRequested>(_onAuthOtpVerifyRequested);
+    on<AuthFirebaseOtpRequested>(_onAuthFirebaseOtpRequested);
+    on<AuthFirebaseOtpVerifyRequested>(_onAuthFirebaseOtpVerifyRequested);
+    on<AuthGoogleSignInRequested>(_onAuthGoogleSignInRequested);
     on<AuthLogoutRequested>(_onAuthLogoutRequested);
     on<AuthProfileUpdateRequested>(_onAuthProfileUpdateRequested);
     on<AuthAvatarUploadRequested>(_onAuthAvatarUploadRequested);
@@ -72,36 +78,16 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     ));
 
     try {
-      final result = await _apiClient.loginWithEmail(
+      final idToken = await _firebaseAuthService.loginWithEmail(
         email: event.email,
         password: event.password,
       );
-
-      final success =
-          result['success'] == true || result.containsKey('access_token');
-      final errorMessage = result['error'] ?? result['message'];
-
-      if (success) {
-        final user = User.fromJson(result['user']);
-        await _apiClient.saveTokens(
-          result['access_token'],
-          result['refresh_token'],
-        );
-
-        _wsService.setCurrentUserId(user.id);
-        await _wsService.connect();
-
-        emit(state.copyWith(
-          status: AuthStatus.authenticated,
-          user: user,
-          errorMessage: null,
-        ));
-      } else {
-        emit(state.copyWith(
-          status: AuthStatus.error,
-          errorMessage: errorMessage ?? 'Login failed',
-        ));
-      }
+      await _completeFirebaseAuth(idToken, emit);
+    } on FirebaseAuthException catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: _friendlyAuthError(e),
+      ));
     } catch (e) {
       String errorMsg = 'Login failed';
       if (e.toString().contains('Network error')) {
@@ -127,46 +113,17 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     ));
 
     try {
-      final result = await _apiClient.registerWithEmail(
+      final idToken = await _firebaseAuthService.registerWithEmail(
         email: event.email,
         password: event.password,
         displayName: event.displayName,
       );
-
-      print('DEBUG register result: $result');
-
-      // Check for various success indicators
-      final hasAccessToken =
-          result.containsKey('access_token') || result.containsKey('token');
-      final hasUser = result.containsKey('user');
-      final isSuccess =
-          result['success'] == true || (hasAccessToken && hasUser);
-
-      if (isSuccess) {
-        final userData = result['user'] ?? result;
-        final user = User.fromJson(userData as Map<String, dynamic>);
-        final token = result['access_token'] ?? result['token'];
-        final refreshToken = result['refresh_token'] ?? result['refreshToken'];
-
-        await _apiClient.saveTokens(token, refreshToken);
-
-        _wsService.setCurrentUserId(user.id);
-        await _wsService.connect();
-
-        emit(state.copyWith(
-          status: AuthStatus.authenticated,
-          user: user,
-          errorMessage: null,
-        ));
-      } else {
-        final errorMsg =
-            result['error'] ?? result['message'] ?? 'Registration failed';
-        print('DEBUG register failed: $errorMsg');
-        emit(state.copyWith(
-          status: AuthStatus.error,
-          errorMessage: errorMsg,
-        ));
-      }
+      await _completeFirebaseAuth(idToken, emit);
+    } on FirebaseAuthException catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: _friendlyAuthError(e),
+      ));
     } catch (e) {
       String errorMsg = 'Registration failed';
       if (e.toString().contains('Network error')) {
@@ -297,8 +254,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
 
-  Future<void> _onAuthOtpRequested(
-    AuthOtpRequested event,
+  Future<void> _onAuthFirebaseOtpRequested(
+    AuthFirebaseOtpRequested event,
     Emitter<AuthState> emit,
   ) async {
     emit(state.copyWith(
@@ -308,25 +265,23 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     ));
 
     try {
-      final result = await _apiClient.requestOtp(
-        event.phone,
-        countryCode: event.countryCode,
-      );
-
-      if (result['success'] == true) {
-        emit(state.copyWith(
-          status: AuthStatus.otpSent,
-          correlationId: result['correlation_id'],
-          otpPhone: event.phone,
-          devOtpCode: result['dev_code'],
-          errorMessage: null,
-        ));
-      } else {
-        emit(state.copyWith(
-          status: AuthStatus.error,
-          errorMessage: result['error'] ?? 'Failed to send OTP',
-        ));
+      final result = await _firebaseAuthService.sendCode(event.phone);
+      switch (result) {
+        case PhoneCodeSent(:final verificationId):
+          emit(state.copyWith(
+            status: AuthStatus.otpSent,
+            verificationId: verificationId,
+            otpPhone: event.phone,
+            errorMessage: null,
+          ));
+        case PhoneAutoVerified(:final idToken):
+          await _completeFirebaseAuth(idToken, emit);
       }
+    } on FirebaseAuthException catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: _friendlyAuthError(e),
+      ));
     } catch (e) {
       emit(state.copyWith(
         status: AuthStatus.error,
@@ -335,8 +290,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
 
-  Future<void> _onAuthOtpVerifyRequested(
-    AuthOtpVerifyRequested event,
+  Future<void> _onAuthFirebaseOtpVerifyRequested(
+    AuthFirebaseOtpVerifyRequested event,
     Emitter<AuthState> emit,
   ) async {
     emit(state.copyWith(
@@ -345,42 +300,14 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     ));
 
     try {
-      final result = await _apiClient.verifyOtpAndLogin(
-        phone: event.phone,
-        countryCode: event.countryCode,
-        otpCode: event.otpCode,
-        correlationId: event.correlationId,
-      );
-
-      final success = result['success'] == true && result['verified'] == true;
-
-      if (success) {
-        await _apiClient.saveTokens(
-          result['access_token'],
-          result['refresh_token'],
-        );
-
-        // The verify response does not include the user profile; fetch it.
-        final profileData = await _apiClient.getProfile();
-        final user = User.fromJson(profileData);
-
-        _wsService.setCurrentUserId(user.id);
-        await _wsService.connect();
-
-        emit(state.copyWith(
-          status: AuthStatus.authenticated,
-          user: user,
-          correlationId: null,
-          otpPhone: null,
-          devOtpCode: null,
-          errorMessage: null,
-        ));
-      } else {
-        emit(state.copyWith(
-          status: AuthStatus.error,
-          errorMessage: result['error'] ?? 'Verification failed',
-        ));
-      }
+      final idToken =
+          await _firebaseAuthService.verifyCode(event.otpCode.trim());
+      await _completeFirebaseAuth(idToken, emit);
+    } on FirebaseAuthException catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: _friendlyAuthError(e),
+      ));
     } catch (e) {
       emit(state.copyWith(
         status: AuthStatus.error,
@@ -389,11 +316,99 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
   }
 
+  Future<void> _onAuthGoogleSignInRequested(
+    AuthGoogleSignInRequested event,
+    Emitter<AuthState> emit,
+  ) async {
+    emit(state.copyWith(
+      status: AuthStatus.loading,
+      errorMessage: null,
+    ));
+
+    try {
+      final idToken = await _firebaseAuthService.signInWithGoogle();
+      await _completeFirebaseAuth(idToken, emit);
+    } on FirebaseAuthException catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: _friendlyAuthError(e),
+      ));
+    } catch (e) {
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: e.toString(),
+      ));
+    }
+  }
+
+  /// Exchanges a Firebase ID token for a SecureChat session and connects the
+  /// WebSocket. Shared by OTP entry, instant verification, and Google sign-in.
+  Future<void> _completeFirebaseAuth(String idToken, Emitter<AuthState> emit) async {
+    debugPrint('[AuthBloc] exchanging Firebase token with backend...');
+    final result = await _firebaseAuthService.exchangeToken(idToken);
+    debugPrint('[AuthBloc] backend exchange response: $result');
+
+    final success =
+        result['success'] == true || result.containsKey('access_token');
+    if (!success) {
+      throw Exception(result['error'] ?? 'Authentication failed');
+    }
+
+    await _apiClient.saveTokens(
+      result['access_token'],
+      result['refresh_token'],
+    );
+
+    final user = User.fromJson(result['user'] as Map<String, dynamic>);
+
+    debugPrint('[AuthBloc] connecting WebSocket for user ${user.id}...');
+    _wsService.setCurrentUserId(user.id);
+    await _wsService.connect();
+
+    emit(state.copyWith(
+      status: AuthStatus.authenticated,
+      user: user,
+      phone: null,
+      verificationId: null,
+      otpPhone: null,
+      errorMessage: null,
+    ));
+  }
+
+  String _friendlyAuthError(FirebaseAuthException error) {
+    switch (error.code) {
+      case 'invalid-verification-code':
+        return 'Incorrect code. Please try again.';
+      case 'invalid-phone-number':
+        return 'Invalid phone number. Use the international format (e.g. +1234567890).';
+      case 'too-many-requests':
+        return 'Too many attempts. Please wait and try again.';
+      case 'session-expired':
+        return 'The verification code has expired. Please request a new one.';
+      case 'invalid-email':
+        return 'Please enter a valid email address.';
+      case 'email-already-in-use':
+        return 'This email is already registered. Try logging in instead.';
+      case 'weak-password':
+        return 'Password is too weak. Use at least 6 characters.';
+      case 'user-not-found':
+        return 'No account found for this email. Please register first.';
+      case 'wrong-password':
+      case 'invalid-credential':
+        return 'Incorrect email or password.';
+      case 'user-disabled':
+        return 'This account has been disabled.';
+      default:
+        return error.message ?? 'Verification failed';
+    }
+  }
+
   Future<void> _onAuthLogoutRequested(
     AuthLogoutRequested event,
     Emitter<AuthState> emit,
   ) async {
     final currentUserId = state.user?.id;
+    await _firebaseAuthService.signOut();
     await _wsService.disconnect();
     await _apiClient.clearTokens();
     if (currentUserId != null) {

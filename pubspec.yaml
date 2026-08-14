@@ -53,7 +53,8 @@ dependencies:
   pointycastle: ^4.0.0
 
   # Contacts
-  contacts_service: ^0.6.3
+  contacts_service:
+    path: plugins/contacts_service
   permission_handler: ^11.0.0
 
   # Notifications
@@ -62,8 +63,12 @@ dependencies:
 
   # WebRTC (voice/video calls)
   flutter_webrtc: ^1.6.0
+
+  # Firebase (push notifications + authentication)
   firebase_messaging: ^16.5.0
   firebase_core: ^4.13.0
+  firebase_auth: ^6.5.7
+  google_sign_in: ^7.2.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -16,9 +16,8 @@ class AuthState extends Equatable {
   final String? errorMessage;
   final String? phone;
   final String? email;
-  final String? correlationId;
+  final String? verificationId;
   final String? otpPhone;
-  final String? devOtpCode;
 
   const AuthState({
     this.status = AuthStatus.initial,
@@ -26,9 +25,8 @@ class AuthState extends Equatable {
     this.errorMessage,
     this.phone,
     this.email,
-    this.correlationId,
+    this.verificationId,
     this.otpPhone,
-    this.devOtpCode,
   });
 
   AuthState copyWith({
@@ -37,9 +35,8 @@ class AuthState extends Equatable {
     String? errorMessage,
     String? phone,
     String? email,
-    String? correlationId,
+    String? verificationId,
     String? otpPhone,
-    String? devOtpCode,
   }) {
     return AuthState(
       status: status ?? this.status,
@@ -47,9 +44,8 @@ class AuthState extends Equatable {
       errorMessage: errorMessage ?? this.errorMessage,
       phone: phone ?? this.phone,
       email: email ?? this.email,
-      correlationId: correlationId ?? this.correlationId,
+      verificationId: verificationId ?? this.verificationId,
       otpPhone: otpPhone ?? this.otpPhone,
-      devOtpCode: devOtpCode ?? this.devOtpCode,
     );
   }
 
@@ -60,8 +56,7 @@ class AuthState extends Equatable {
         errorMessage,
         phone,
         email,
-        correlationId,
+        verificationId,
         otpPhone,
-        devOtpCode,
       ];
 }

@@ -65,31 +65,24 @@ class AuthPhoneRegisterRequested extends AuthEvent {
   List<Object?> get props => [phone, password, displayName];
 }
 
-class AuthOtpRequested extends AuthEvent {
+class AuthFirebaseOtpRequested extends AuthEvent {
   final String phone;
-  final int countryCode;
 
-  const AuthOtpRequested({required this.phone, this.countryCode = 91});
+  const AuthFirebaseOtpRequested({required this.phone});
 
   @override
-  List<Object?> get props => [phone, countryCode];
+  List<Object?> get props => [phone];
 }
 
-class AuthOtpVerifyRequested extends AuthEvent {
-  final String phone;
-  final int countryCode;
-  final String otpCode;
-  final String correlationId;
+class AuthGoogleSignInRequested extends AuthEvent {}
 
-  const AuthOtpVerifyRequested({
-    required this.phone,
-    required this.countryCode,
-    required this.otpCode,
-    required this.correlationId,
-  });
+class AuthFirebaseOtpVerifyRequested extends AuthEvent {
+  final String otpCode;
+
+  const AuthFirebaseOtpVerifyRequested({required this.otpCode});
 
   @override
-  List<Object?> get props => [phone, countryCode, otpCode, correlationId];
+  List<Object?> get props => [otpCode];
 }
 
 class AuthLogoutRequested extends AuthEvent {}
