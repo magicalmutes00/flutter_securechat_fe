@@ -4,6 +4,7 @@ import '../../core/theme/app_theme.dart';
 import '../blocs/auth/auth_bloc.dart';
 import '../blocs/auth/auth_event.dart';
 import '../blocs/auth/auth_state.dart';
+import '../widgets/google_sign_in_button.dart';
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -154,9 +155,7 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
 
-    context
-        .read<AuthBloc>()
-        .add(AuthFirebaseOtpVerifyRequested(otpCode: code));
+    context.read<AuthBloc>().add(AuthFirebaseOtpVerifyRequested(otpCode: code));
   }
 
   @override
@@ -251,18 +250,9 @@ class _LoginScreenState extends State<LoginScreen>
                     ],
                   ),
                   const SizedBox(height: 16),
-                  OutlinedButton(
-                    onPressed: state.status == AuthStatus.loading
-                        ? null
-                        : _signInWithGoogle,
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      side: BorderSide(color: Colors.grey.shade400),
-                    ),
-                    child: const Text(
-                      'Continue with Google',
-                      style: TextStyle(fontSize: 16),
-                    ),
+                  GoogleSignInButton(
+                    onPressed: _signInWithGoogle,
+                    isLoading: state.status == AuthStatus.loading,
                   ),
                 ],
               ),

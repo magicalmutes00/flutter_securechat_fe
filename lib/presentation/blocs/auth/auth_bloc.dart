@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
 import '../../../data/services/e2ee/e2ee_service.dart';
@@ -330,6 +331,17 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     try {
       final idToken = await _firebaseAuthService.signInWithGoogle();
       await _completeFirebaseAuth(idToken, emit);
+    } on GoogleSignInException catch (e) {
+      if (e.code == GoogleSignInExceptionCode.canceled) {
+        // User closed the account picker — reset quietly instead of showing
+        // an error.
+        emit(const AuthState(status: AuthStatus.unauthenticated));
+        return;
+      }
+      emit(state.copyWith(
+        status: AuthStatus.error,
+        errorMessage: e.toString(),
+      ));
     } on FirebaseAuthException catch (e) {
       emit(state.copyWith(
         status: AuthStatus.error,
