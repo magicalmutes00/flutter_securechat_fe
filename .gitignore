@@ -46,3 +46,11 @@ app.*.map.json
 
 # Gradle caches inside vendored plugins
 **/.gradle/
+
+# Secrets (never commit)
+local.properties
+*.jks
+*.keystore
+android/key.properties
+.env
+.env.local
