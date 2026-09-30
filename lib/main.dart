@@ -12,8 +12,10 @@ import 'presentation/blocs/auth/auth_bloc.dart';
 import 'presentation/blocs/auth/auth_event.dart';
 import 'presentation/blocs/auth/auth_state.dart';
 import 'presentation/blocs/chat/chat_bloc.dart';
+import 'presentation/blocs/theme/theme_cubit.dart';
 import 'presentation/screens/login_screen.dart';
 import 'presentation/screens/home_screen.dart';
+import 'presentation/screens/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -56,34 +58,39 @@ class SecureChatApp extends StatelessWidget {
         BlocProvider<ChatBloc>(
           create: (context) => ChatBloc(),
         ),
-      ],
-      child: MaterialApp(
-        title: 'SecureChat',
-        navigatorKey: appNavigatorKey,
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
-        builder: (context, child) {
-          IncomingCallRouter.init(context);
-          return child!;
-        },
-        home: BlocBuilder<AuthBloc, AuthState>(
-          builder: (context, state) {
-            if (state.status == AuthStatus.initial ||
-                state.status == AuthStatus.loading) {
-              return const Scaffold(
-                body: Center(
-                  child: CircularProgressIndicator(),
-                ),
-              );
-            }
-
-            if (state.status == AuthStatus.authenticated) {
-              return const HomeScreen();
-            }
-
-            return const LoginScreen();
-          },
+        BlocProvider<ThemeCubit>(
+          create: (context) => ThemeCubit()..load(),
         ),
+      ],
+      child: BlocBuilder<ThemeCubit, ThemeMode>(
+        builder: (context, themeMode) {
+          return MaterialApp(
+            title: 'SecureChat',
+            navigatorKey: appNavigatorKey,
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeMode,
+            builder: (context, child) {
+              IncomingCallRouter.init(context);
+              return child!;
+            },
+            home: BlocBuilder<AuthBloc, AuthState>(
+              builder: (context, state) {
+                if (state.status == AuthStatus.initial ||
+                    state.status == AuthStatus.loading) {
+                  return const SplashScreen();
+                }
+
+                if (state.status == AuthStatus.authenticated) {
+                  return const HomeScreen();
+                }
+
+                return const LoginScreen();
+              },
+            ),
+          );
+        },
       ),
     );
   }

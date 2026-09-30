@@ -4,8 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:intl/intl.dart';
+
 import '../../core/constants/app_constants.dart';
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
+import '../../core/utils/time_format.dart';
 import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
@@ -14,10 +17,10 @@ import '../../data/services/rtc/call_manager.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
-import '../widgets/message_bubble.dart';
-import '../widgets/security_code_sheet.dart';
-import 'call_screen.dart';
 import '../widgets/auth_image.dart';
+import '../widgets/message_bubble.dart';
+import '../widgets/ui/ui.dart';
+import 'call_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final User user;
@@ -32,7 +35,10 @@ class _ChatScreenState extends State<ChatScreen> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final ImagePicker _imagePicker = ImagePicker();
+  final Map<String, GlobalKey> _messageKeys = {};
   bool _isTyping = false;
+  bool _nearBottom = true;
+  int _lastMessageCount = 0;
   StreamSubscription? _blocSubscription;
 
   String get _chatTitle =>
@@ -55,12 +61,31 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  void _showSearchDialog(BuildContext context) {
+  void _showSearchDialog() {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (_) => _MessageSearchSheet(peerUserId: widget.user.id),
+      builder: (_) => _MessageSearchSheet(
+        peerUserId: widget.user.id,
+        onSelect: _jumpToMessage,
+      ),
     );
+  }
+
+  /// Scrolls the list so the tapped search result is visible.
+  void _jumpToMessage(Message message) {
+    Navigator.pop(context);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _messageKeys[message.id]?.currentContext;
+      if (ctx != null && mounted) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: AppDurations.medium,
+          curve: Curves.easeOut,
+          alignment: 0.5,
+        );
+      }
+    });
   }
 
   @override
@@ -68,15 +93,34 @@ class _ChatScreenState extends State<ChatScreen> {
     super.initState();
     InAppNotificationService.instance.setViewingChat(widget.user.id);
     context.read<ChatBloc>().add(ChatLoadMessages(userId: widget.user.id));
+    _scrollController.addListener(_onScroll);
+    // Smart autoscroll: follow new messages only when the user is already
+    // near the latest (or sent them) — never yank the list while reading.
     _blocSubscription = context.read<ChatBloc>().stream.listen((state) {
-      if (state.messages.isNotEmpty && _scrollController.hasClients) {
-        _scrollController.animateTo(
-          0,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+      final count = state.messages.length;
+      if (_lastMessageCount == 0) {
+        _lastMessageCount = count;
+        return;
       }
+      if (count > _lastMessageCount && _scrollController.hasClients) {
+        final newest = state.messages.last;
+        final mine = newest.senderId != widget.user.id;
+        if (mine || _nearBottom) {
+          _scrollController.animateTo(
+            0,
+            duration: AppDurations.medium,
+            curve: Curves.easeOut,
+          );
+        }
+      }
+      _lastMessageCount = count;
     });
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final near = _scrollController.offset < 120;
+    if (near != _nearBottom) setState(() => _nearBottom = near);
   }
 
   @override
@@ -97,6 +141,22 @@ class _ChatScreenState extends State<ChatScreen> {
         ));
 
     _messageController.clear();
+  }
+
+  void _onComposerChanged(String value) {
+    if (value.isNotEmpty && !_isTyping) {
+      _isTyping = true;
+      context.read<ChatBloc>().add(ChatSendTypingStatus(
+            receiverId: widget.user.id,
+            isTyping: true,
+          ));
+    } else if (value.isEmpty && _isTyping) {
+      _isTyping = false;
+      context.read<ChatBloc>().add(ChatSendTypingStatus(
+            receiverId: widget.user.id,
+            isTyping: false,
+          ));
+    }
   }
 
   Future<void> _pickImage(ImageSource source) async {
@@ -163,11 +223,13 @@ class _ChatScreenState extends State<ChatScreen> {
   void _showAttachmentOptions() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => SafeArea(
-        child: Wrap(
+      builder: (context) => SheetScaffold(
+        title: 'Share',
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.image, color: AppTheme.primaryColor),
+              leading: const Icon(Icons.image_outlined),
               title: const Text('Gallery'),
               onTap: () {
                 Navigator.pop(context);
@@ -175,8 +237,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading:
-                  const Icon(Icons.camera_alt, color: AppTheme.primaryColor),
+              leading: const Icon(Icons.camera_alt_outlined),
               title: const Text('Camera'),
               onTap: () {
                 Navigator.pop(context);
@@ -184,7 +245,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.videocam, color: AppTheme.primaryColor),
+              leading: const Icon(Icons.videocam_outlined),
               title: const Text('Video'),
               onTap: () {
                 Navigator.pop(context);
@@ -192,8 +253,7 @@ class _ChatScreenState extends State<ChatScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.insert_drive_file,
-                  color: AppTheme.primaryColor),
+              leading: const Icon(Icons.insert_drive_file_outlined),
               title: const Text('Document'),
               onTap: () {
                 Navigator.pop(context);
@@ -213,54 +273,54 @@ class _ChatScreenState extends State<ChatScreen> {
         titleSpacing: 0,
         title: Row(
           children: [
-            CircleAvatar(
+            AppAvatar(
+              label: _chatTitle,
               radius: 18,
-              backgroundColor: Colors.white,
-              child: widget.user.avatarUrl != null
-                  ? ClipOval(
-                      child: AuthImage(
-                        path: widget.user.avatarUrl!,
-                        width: 36,
-                        height: 36,
-                        fit: BoxFit.cover,
-                        errorIcon: Icons.person,
-                      ),
+              image: widget.user.avatarUrl != null
+                  ? AuthImage(
+                      path: widget.user.avatarUrl!,
+                      width: 36,
+                      height: 36,
+                      fit: BoxFit.cover,
+                      errorIcon: Icons.person,
                     )
-                  : const Icon(
-                      Icons.person,
-                      color: AppTheme.primaryColor,
-                      size: 20,
-                    ),
+                  : null,
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: AppSpacing.md),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    _chatTitle,
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w600),
-                  ),
+                  Text(_chatTitle,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
                   BlocBuilder<ChatBloc, ChatState>(
                     builder: (context, state) {
                       if (state.isTyping) {
-                        return const Text(
-                          'typing...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppTheme.primaryColor,
-                            fontStyle: FontStyle.italic,
-                          ),
+                        return Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            _TypingDots(
+                                color:
+                                    context.appColors.typingIndicator),
+                            const SizedBox(width: AppSpacing.xs),
+                            Text(
+                              'typing',
+                              style: context.text.bodySmall?.copyWith(
+                                color:
+                                    context.appColors.typingIndicator,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ],
                         );
                       }
+                      final online = widget.user.isOnline;
                       return Text(
-                        widget.user.isOnline ? 'online' : 'offline',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: widget.user.isOnline
-                              ? AppTheme.onlineStatusColor
-                              : AppTheme.offlineStatusColor,
+                        online ? 'online' : 'offline',
+                        style: context.text.bodySmall?.copyWith(
+                          color: online
+                              ? context.appColors.presenceOnline
+                              : context.appColors.presenceOffline,
                         ),
                       );
                     },
@@ -272,50 +332,26 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.call),
+            icon: const Icon(Icons.call_outlined),
+            tooltip: 'Voice call',
             onPressed: () => _startCall(isVideo: false),
           ),
           IconButton(
-            icon: const Icon(Icons.videocam),
+            icon: const Icon(Icons.videocam_outlined),
+            tooltip: 'Video call',
             onPressed: () => _startCall(isVideo: true),
           ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) {
-              if (value == 'search') {
-                _showSearchDialog(context);
-              } else if (value == 'security') {
-                showModalBottomSheet(
-                  context: context,
-                  builder: (context) =>
-                      SecurityCodeSheet(peerUserId: widget.user.id),
-                );
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(
-                value: 'search',
-                child: ListTile(
-                  leading: Icon(Icons.search),
-                  title: Text('Search in conversation'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-              PopupMenuItem(
-                value: 'security',
-                child: ListTile(
-                  leading: Icon(Icons.shield),
-                  title: Text('View safety number'),
-                  contentPadding: EdgeInsets.zero,
-                ),
-              ),
-            ],
+          IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Search in conversation',
+            onPressed: _showSearchDialog,
           ),
         ],
       ),
       body: BlocListener<ChatBloc, ChatState>(
         listenWhen: (prev, curr) =>
-            curr.errorMessage != null && prev.errorMessage != curr.errorMessage,
+            curr.errorMessage != null &&
+            prev.errorMessage != curr.errorMessage,
         listener: (context, state) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(state.errorMessage!)),
@@ -328,170 +364,251 @@ class _ChatScreenState extends State<ChatScreen> {
                 builder: (context, state) {
                   if (state.status == ChatStatus.loading &&
                       state.messages.isEmpty) {
-                    return const Center(child: CircularProgressIndicator());
+                    return const _BubbleSkeleton();
                   }
 
                   if (state.status == ChatStatus.error) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.error_outline,
-                            size: 80,
-                            color: Colors.red[400],
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'Failed to load messages',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.grey[600],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          TextButton(
-                            onPressed: () {
-                              context.read<ChatBloc>().add(
-                                  ChatLoadMessages(userId: widget.user.id));
-                            },
-                            child: const Text('Retry'),
-                          ),
-                        ],
-                      ),
+                    return ErrorState(
+                      message: state.errorMessage ??
+                          'Failed to load messages',
+                      onRetry: () => context.read<ChatBloc>().add(
+                          ChatLoadMessages(userId: widget.user.id)),
                     );
                   }
 
                   if (state.messages.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(
-                            Icons.chat_bubble_outline,
-                            size: 80,
-                            color: Colors.grey[400],
-                          ),
-                          const SizedBox(height: 16),
-                          Text(
-                            'No messages yet',
-                            style: TextStyle(
-                              fontSize: 16,
-                              color: Colors.grey[600],
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Start a conversation!',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey[500],
-                            ),
-                          ),
-                        ],
-                      ),
+                    return EmptyState(
+                      icon: Icons.waving_hand_outlined,
+                      title: 'No messages yet',
+                      body:
+                          'Say hello to $_chatTitle — messages are end-to-end encrypted.',
                     );
                   }
 
-                  return ListView.builder(
+                  return ListView(
                     controller: _scrollController,
                     reverse: true,
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    itemCount: state.messages.length,
-                    itemBuilder: (context, index) {
-                      // With reverse:true, index 0 is at the BOTTOM (newest)
-                      // So we reverse to show oldest at top
-                      final message =
-                          state.messages[state.messages.length - 1 - index];
-                      return MessageBubble(
-                        message: message,
-                        isMe: message.senderId == widget.user.id,
-                      );
-                    },
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+                    children: _buildMessageWidgets(state.messages),
                   );
                 },
               ),
             ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.05),
-                    blurRadius: 10,
-                    offset: const Offset(0, -2),
-                  ),
-                ],
-              ),
-              child: SafeArea(
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.attach_file,
-                          color: AppTheme.primaryColor),
-                      onPressed: _showAttachmentOptions,
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        decoration: InputDecoration(
-                          hintText: 'Type a message...',
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(24),
-                            borderSide: BorderSide.none,
-                          ),
-                          filled: true,
-                          fillColor: Colors.grey[100],
-                          contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 20,
-                            vertical: 10,
-                          ),
-                        ),
-                        maxLines: null,
-                        textCapitalization: TextCapitalization.sentences,
-                        onChanged: (value) {
-                          if (value.isNotEmpty && !_isTyping) {
-                            _isTyping = true;
-                            context.read<ChatBloc>().add(ChatSendTypingStatus(
-                                  receiverId: widget.user.id,
-                                  isTyping: true,
-                                ));
-                          } else if (value.isEmpty && _isTyping) {
-                            _isTyping = false;
-                            context.read<ChatBloc>().add(ChatSendTypingStatus(
-                                  receiverId: widget.user.id,
-                                  isTyping: false,
-                                ));
-                          }
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    CircleAvatar(
-                      backgroundColor: AppTheme.primaryColor,
-                      child: IconButton(
-                        icon: const Icon(Icons.send,
-                            color: Colors.white, size: 20),
-                        onPressed: _sendMessage,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            ChatInputBar(
+              controller: _messageController,
+              onSend: _sendMessage,
+              onAttach: _showAttachmentOptions,
+              onChanged: _onComposerChanged,
             ),
           ],
+        ),
+      ),
+      floatingActionButton: _nearBottom
+          ? null
+          : FloatingActionButton.small(
+              heroTag: 'scroll_latest',
+              onPressed: () {
+                if (_scrollController.hasClients) {
+                  _scrollController.animateTo(
+                    0,
+                    duration: AppDurations.medium,
+                    curve: Curves.easeOut,
+                  );
+                }
+              },
+              child: const Icon(Icons.arrow_downward),
+            ),
+    );
+  }
+
+  /// Builds oldest→newest widgets with day dividers and tight grouping for
+  /// consecutive same-sender messages, then reverses for the `reverse` list.
+  List<Widget> _buildMessageWidgets(List<Message> messages) {
+    // Drop lookup keys for messages that are gone (deleted / refreshed).
+    final ids = messages.map((m) => m.id).toSet();
+    _messageKeys.removeWhere((id, _) => !ids.contains(id));
+
+    final widgets = <Widget>[];
+    DateTime? lastDay;
+    String? lastSender;
+    for (final message in messages) {
+      final created = message.createdAt;
+      final day = DateTime(created.year, created.month, created.day);
+      if (lastDay == null || day != lastDay) {
+        widgets.add(_DayDivider(day: day));
+        lastDay = day;
+        lastSender = null;
+      }
+      final tight = lastSender == message.senderId;
+      lastSender = message.senderId;
+      widgets.add(
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: tight ? 0 : 3),
+          child: Container(
+            key: _messageKeys.putIfAbsent(message.id, () => GlobalKey()),
+            child: MessageBubble(
+              message: message,
+              isMe: message.senderId != widget.user.id,
+              onDelete: () => context.read<ChatBloc>().add(
+                    ChatDeleteMessage(
+                      messageId: message.id,
+                      otherUserId: widget.user.id,
+                    ),
+                  ),
+            ),
+          ),
+        ),
+      );
+    }
+    return widgets.reversed.toList();
+  }
+}
+
+class _DayDivider extends StatelessWidget {
+  final DateTime day;
+
+  const _DayDivider({required this.day});
+
+  String _label(DateTime now) {
+    final today = DateTime(now.year, now.month, now.day);
+    final diff = today.difference(day).inDays;
+    if (diff <= 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) return DateFormat('EEEE').format(day);
+    return DateFormat('MMM d, y').format(day);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+          decoration: BoxDecoration(
+            color: context.colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          child: Text(
+            _label(DateTime.now()),
+            style: context.text.labelSmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
+/// Animated three-dot typing indicator in the app-bar subtitle.
+class _TypingDots extends StatefulWidget {
+  final Color color;
+
+  const _TypingDots({required this.color});
+
+  @override
+  State<_TypingDots> createState() => _TypingDotsState();
+}
+
+class _TypingDotsState extends State<_TypingDots>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(_TypingDots oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.color != widget.color) setState(() {});
+  }
+
+  Widget _dot(double start, double end) {
+    return FadeTransition(
+      opacity: Tween<double>(begin: 0.25, end: 1.0).animate(
+        CurvedAnimation(
+          parent: _controller,
+          curve: Interval(start, end, curve: Curves.easeInOut),
+        ),
+      ),
+      child: Container(
+        width: 6,
+        height: 6,
+        decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _dot(0.0, 0.4),
+        const SizedBox(width: 3),
+        _dot(0.3, 0.7),
+        const SizedBox(width: 3),
+        _dot(0.6, 1.0),
+      ],
+    );
+  }
+}
+
+class _BubbleSkeleton extends StatelessWidget {
+  const _BubbleSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      reverse: true,
+      padding: const EdgeInsets.symmetric(
+          horizontal: AppSpacing.lg, vertical: AppSpacing.sm),
+      children: const [
+        Align(
+          alignment: Alignment.centerRight,
+          child: SkeletonBox(width: 220, height: 52, radius: AppRadius.lg),
+        ),
+        SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SkeletonBox(width: 180, height: 52, radius: AppRadius.lg),
+        ),
+        SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerRight,
+          child: SkeletonBox(width: 140, height: 44, radius: AppRadius.lg),
+        ),
+        SizedBox(height: AppSpacing.sm),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SkeletonBox(width: 240, height: 60, radius: AppRadius.lg),
+        ),
+      ],
+    );
+  }
+}
+
 class _MessageSearchSheet extends StatefulWidget {
   final String peerUserId;
+  final void Function(Message message) onSelect;
 
-  const _MessageSearchSheet({required this.peerUserId});
+  const _MessageSearchSheet({required this.peerUserId, required this.onSelect});
 
   @override
   State<_MessageSearchSheet> createState() => _MessageSearchSheetState();
@@ -538,7 +655,7 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
         _results = matches;
         _isSearching = false;
       });
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         _isSearching = false;
@@ -549,109 +666,79 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: EdgeInsets.only(
-        left: 16,
-        right: 16,
-        top: 16,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 16,
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          TextField(
-            controller: _searchController,
-            autofocus: true,
-            decoration: InputDecoration(
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) => SheetScaffold(
+        title: 'Search in conversation',
+        child: Column(
+          children: [
+            AppTextField(
+              controller: _searchController,
               hintText: 'Search messages...',
               prefixIcon: const Icon(Icons.search),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(24),
-                borderSide: BorderSide.none,
-              ),
-              filled: true,
-              fillColor: Colors.grey[100],
+              textInputAction: TextInputAction.search,
+              onChanged: _runSearch,
             ),
-            onChanged: _runSearch,
-          ),
-          const SizedBox(height: 12),
-          Flexible(
-            child: _isSearching
-                ? const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Center(child: CircularProgressIndicator()),
-                  )
-                : _error != null
-                    ? Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Center(
-                          child: Text(
-                            _error!,
-                            style: TextStyle(color: Colors.grey[600]),
-                          ),
-                        ),
-                      )
-                    : _results.isEmpty
-                        ? Padding(
-                            padding: const EdgeInsets.all(24),
-                            child: Center(
+            const SizedBox(height: AppSpacing.sm),
+            Expanded(
+              child: _isSearching
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                      ? ErrorState(
+                          message: _error!,
+                          onRetry: () =>
+                              _runSearch(_searchController.text),
+                        )
+                      : _results.isEmpty
+                          ? Center(
                               child: Text(
                                 _searchController.text.trim().isEmpty
                                     ? 'Type to search in this conversation.'
                                     : 'No matching messages.',
-                                style: TextStyle(color: Colors.grey[600]),
+                                style: context.text.bodyMedium?.copyWith(
+                                  color: context.colors.onSurfaceVariant,
+                                ),
                               ),
+                            )
+                          : ListView.builder(
+                              controller: scrollController,
+                              itemCount: _results.length,
+                              itemBuilder: (context, index) {
+                                final message = _results[index];
+                                final isMe =
+                                    message.senderId != widget.peerUserId;
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(
+                                    message.isTextMessage
+                                        ? Icons.chat_bubble_outline
+                                        : Icons.attach_file_outlined,
+                                    color:
+                                        context.appColors.primaryEmphasis,
+                                    size: 20,
+                                  ),
+                                  title: Text(
+                                    message.content.isEmpty
+                                        ? '[Media message]'
+                                        : message.content,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  subtitle: Text(
+                                    '${isMe ? 'You' : 'Them'} · '
+                                    '${formatChatTime(message.createdAt)}',
+                                  ),
+                                  onTap: () => widget.onSelect(message),
+                                );
+                              },
                             ),
-                          )
-                        : ListView.builder(
-                            shrinkWrap: true,
-                            itemCount: _results.length,
-                            itemBuilder: (context, index) {
-                              final message = _results[index];
-                              final isMe =
-                                  message.senderId != widget.peerUserId;
-                              return ListTile(
-                                dense: true,
-                                leading: Icon(
-                                  message.isTextMessage
-                                      ? Icons.chat_bubble_outline
-                                      : Icons.attach_file,
-                                  color: AppTheme.primaryColor,
-                                  size: 20,
-                                ),
-                                title: Text(
-                                  message.content.isEmpty
-                                      ? '[Media message]'
-                                      : message.content,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  '${isMe ? 'You' : 'Them'} · '
-                                  '${_formatTime(message.createdAt)}',
-                                ),
-                                onTap: () {
-                                  Navigator.pop(context);
-                                },
-                              );
-                            },
-                          ),
-          ),
-        ],
+            ),
+          ],
+        ),
       ),
     );
-  }
-
-  String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    if (time.year == now.year &&
-        time.month == now.month &&
-        time.day == now.day) {
-      final h = time.hour.toString().padLeft(2, '0');
-      final m = time.minute.toString().padLeft(2, '0');
-      return '$h:$m';
-    }
-    return '${time.month}/${time.day}/${time.year}';
   }
 }

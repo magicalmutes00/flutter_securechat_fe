@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/services/rtc/call_manager.dart';
 
 class CallScreen extends StatefulWidget {
@@ -102,7 +103,7 @@ class _CallScreenState extends State<CallScreen> {
                         children: [
                           CircleAvatar(
                             radius: 60,
-                            backgroundColor: AppTheme.primaryColor,
+                            backgroundColor: AppPalette.blue600,
                             child: Text(
                               _title.isEmpty ? '?' : _title[0].toUpperCase(),
                               style: const TextStyle(
@@ -114,16 +115,14 @@ class _CallScreenState extends State<CallScreen> {
                           const SizedBox(height: 24),
                           Text(
                             _title,
-                            style: const TextStyle(
+                            style: context.text.headlineLarge?.copyWith(
                               color: Colors.white,
-                              fontSize: 24,
-                              fontWeight: FontWeight.bold,
                             ),
                           ),
                           const SizedBox(height: 8),
                           Text(
                             _isConnected ? 'Call connected' : 'Ringing...',
-                            style: TextStyle(color: Colors.grey[400]),
+                            style: const TextStyle(color: Colors.white70),
                           ),
                         ],
                       ),
@@ -202,7 +201,8 @@ class _CallControlButton extends StatelessWidget {
       children: [
         CircleAvatar(
           radius: 28,
-          backgroundColor: isEndCall ? Colors.red : Colors.white24,
+          backgroundColor:
+              isEndCall ? context.colors.error : Colors.white24,
           child: IconButton(
             icon: Icon(icon, color: Colors.white),
             onPressed: onTap,

@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/models/group_model.dart';
 import '../../data/services/api_client.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
+import '../widgets/ui/ui.dart';
 import 'group_chat_screen.dart';
 
 class NewGroupScreen extends StatefulWidget {
@@ -140,7 +141,9 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
                       _searchController.text.isEmpty
                           ? 'Search for users to add'
                           : 'No users found',
-                      style: TextStyle(color: Colors.grey[600]),
+                      style: context.text.bodyMedium?.copyWith(
+                        color: context.colors.onSurfaceVariant,
+                      ),
                     ),
                   );
                 }
@@ -151,16 +154,12 @@ class _NewGroupScreenState extends State<NewGroupScreen> {
                     final isSelected = _selectedIds.contains(user.id);
                     return CheckboxListTile(
                       value: isSelected,
-                      secondary: CircleAvatar(
-                        backgroundColor: AppTheme.primaryColor,
-                        child: Text(
-                          (user.displayName ??
-                                  user.email ??
-                                  user.phone ??
-                                  'U')[0]
-                              .toUpperCase(),
-                          style: const TextStyle(color: Colors.white),
-                        ),
+                      secondary: AppAvatar(
+                        label: user.displayName ??
+                            user.email ??
+                            user.phone ??
+                            'U',
+                        radius: 20,
                       ),
                       title: Text(user.displayName ?? 'No name'),
                       subtitle: Text(user.email ?? user.phone ?? ''),

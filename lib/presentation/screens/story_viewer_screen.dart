@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../core/theme/app_colors.dart';
 import '../../data/models/status_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
@@ -144,7 +145,7 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
                                       : (i < _currentIndex ? 1 : 0),
                                   minHeight: 3,
                                   backgroundColor: Colors.white24,
-                                  color: Colors.white,
+                                  color: AppPalette.lime400,
                                 ),
                               ),
                             ),

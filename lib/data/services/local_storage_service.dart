@@ -93,6 +93,25 @@ class LocalStorageService {
     await saveMessages(userId, peerUserId, existing);
   }
 
+  /// Replaces the cached message [oldId] with [replacement] (used to swap an
+  /// optimistic temp bubble for the server-acknowledged message carrying the
+  /// real plaintext). Falls back to append when [oldId] is not cached.
+  Future<void> replaceMessage(
+    String userId,
+    String peerUserId,
+    String oldId,
+    Message replacement,
+  ) async {
+    final existing = getMessages(userId, peerUserId);
+    final idx = existing.indexWhere((m) => m.id == oldId);
+    if (idx == -1) {
+      await addMessage(userId, peerUserId, replacement);
+      return;
+    }
+    existing[idx] = replacement;
+    await saveMessages(userId, peerUserId, existing);
+  }
+
   /// Persists the conversation list and per-conversation last messages.
   Future<void> saveConversations(
     String userId,

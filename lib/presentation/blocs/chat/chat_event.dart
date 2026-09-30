@@ -63,6 +63,18 @@ class ChatUpdateMessageStatus extends ChatEvent {
   List<Object?> get props => [messageId, status];
 }
 
+/// The server acknowledged one of our WebSocket sends (`message_sent` carries
+/// the full stored message). Commits the staged outgoing plaintext under the
+/// server id and swaps the optimistic temp bubble for the real message.
+class ChatServerMessageAcked extends ChatEvent {
+  final Map<String, dynamic> serverMessage;
+
+  const ChatServerMessageAcked(this.serverMessage);
+
+  @override
+  List<Object?> get props => [serverMessage];
+}
+
 class ChatSendTypingStatus extends ChatEvent {
   final String receiverId;
   final bool isTyping;
@@ -101,6 +113,17 @@ class ChatReceiveReceipt extends ChatEvent {
 }
 
 class ChatLoadConversations extends ChatEvent {}
+
+/// Marks a 1:1 conversation as read: clears the local unread badge
+/// optimistically and notifies the server (which zeroes `unread_count`).
+class ChatMarkConversationRead extends ChatEvent {
+  final String peerId;
+
+  const ChatMarkConversationRead(this.peerId);
+
+  @override
+  List<Object?> get props => [peerId];
+}
 
 class ChatSearchUsers extends ChatEvent {
   final String query;

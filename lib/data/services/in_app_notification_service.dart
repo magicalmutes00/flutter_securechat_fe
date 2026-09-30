@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../presentation/blocs/chat/chat_bloc.dart';
 import '../../presentation/screens/chat_screen.dart';
 import '../../presentation/screens/group_chat_screen.dart';
@@ -11,7 +11,6 @@ import '../models/group_model.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'api_client.dart';
-import 'e2ee/e2ee_service.dart';
 import 'local_storage_service.dart';
 import 'notification_service.dart';
 import 'rtc/incoming_call_router.dart';
@@ -97,47 +96,12 @@ class InAppNotificationService with WidgetsBindingObserver {
   }
 
   Future<void> _handleIncoming(Message raw, {required bool isGroup}) async {
-    var message = raw;
+    final message = raw;
     final me = _ws.currentUserId;
 
-    // Decrypt here so downstream consumers (ChatBloc, GroupChatScreen)
-    // never touch ciphertext twice.
-    try {
-      if (isGroup) {
-        if (message.encryption == 'sgkey' &&
-            message.cipherBody != null &&
-            message.groupId != null &&
-            me != null) {
-          final plaintext = await E2eeService.instance.decryptGroupText(
-            currentUserId: me,
-            groupId: message.groupId!,
-            senderId: message.senderId,
-            cipherBody: message.cipherBody!,
-            distributionB64: message.distribution,
-          );
-          message = message.copyWith(
-            content: plaintext,
-            encryption: 'none',
-            cipherBody: null,
-            cipherType: null,
-            distribution: null,
-          );
-        }
-        _decryptedGroupMessageController.add(message);
-      } else {
-        if (me != null) {
-          message = await E2eeService.instance
-              .decryptMessage(message, currentUserId: me);
-        }
-        _decryptedMessageController.add(message);
-      }
-    } catch (_) {
-      // Decryption failed: hand the ciphertext on so the chat UI can render
-      // its "unable to decrypt" placeholder.
-      (isGroup ? _decryptedGroupMessageController : _decryptedMessageController)
-          .add(message);
-      return;
-    }
+    // No encryption: messages arrive as plaintext and are forwarded as-is.
+    (isGroup ? _decryptedGroupMessageController : _decryptedMessageController)
+        .add(message);
 
     if (me == null || message.senderId == me) return;
 
@@ -388,15 +352,11 @@ class _NotificationBannerCardState extends State<_NotificationBannerCard>
           color: Colors.transparent,
           child: Container(
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: context.colors.surface,
               borderRadius: BorderRadius.circular(16),
-              boxShadow: const [
-                BoxShadow(
-                  color: Colors.black26,
-                  blurRadius: 16,
-                  offset: Offset(0, 4),
-                ),
-              ],
+              border: Border.all(color: context.colors.outlineVariant),
+              boxShadow:
+                  AppShadows.pop(Theme.of(context).brightness),
             ),
             child: InkWell(
               borderRadius: BorderRadius.circular(16),
@@ -409,8 +369,8 @@ class _NotificationBannerCardState extends State<_NotificationBannerCard>
                     Container(
                       width: 40,
                       height: 40,
-                      decoration: const BoxDecoration(
-                        color: AppTheme.primaryColor,
+                      decoration: BoxDecoration(
+                        color: context.colors.primary,
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
@@ -429,19 +389,15 @@ class _NotificationBannerCardState extends State<_NotificationBannerCard>
                             widget.title,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                            ),
+                            style: context.text.titleSmall,
                           ),
                           const SizedBox(height: 2),
                           Text(
                             widget.body,
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey[700],
+                            style: context.text.bodySmall?.copyWith(
+                              color: context.colors.onSurfaceVariant,
                             ),
                           ),
                         ],

@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../core/constants/app_constants.dart';
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/services/api_client.dart';
 
 /// Composes and publishes a new status ("story"). Supports either a plain text
@@ -119,12 +119,13 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
               Container(
                 height: 200,
                 decoration: BoxDecoration(
-                  color: Colors.grey[100],
+                  color: context.colors.surfaceContainerHigh,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Center(
+                child: Center(
                   child: Icon(Icons.add_a_photo,
-                      size: 48, color: AppTheme.primaryColor),
+                      size: 48,
+                      color: context.appColors.primaryEmphasis),
                 ),
               ),
             const SizedBox(height: 16),
@@ -188,9 +189,10 @@ class _ActionButton extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            Icon(icon, size: 28, color: AppTheme.primaryColor),
+            Icon(icon,
+                size: 28, color: context.appColors.primaryEmphasis),
             const SizedBox(height: 4),
-            Text(label, style: const TextStyle(fontSize: 12)),
+            Text(label, style: context.text.labelMedium),
           ],
         ),
       ),

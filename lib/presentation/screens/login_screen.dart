@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import '../../core/theme/app_theme.dart';
+
+import '../../core/theme/app_tokens.dart';
 import '../blocs/auth/auth_bloc.dart';
 import '../blocs/auth/auth_event.dart';
 import '../blocs/auth/auth_state.dart';
 import '../widgets/google_sign_in_button.dart';
+import '../widgets/ui/ui.dart';
 import 'home_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -17,6 +20,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  int _tabIndex = 0;
 
   // Email/Password controllers
   final TextEditingController _emailController = TextEditingController();
@@ -28,14 +32,26 @@ class _LoginScreenState extends State<LoginScreen>
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
 
+  // Inline validation errors (null = valid / untouched).
+  String? _emailError;
+  String? _passwordError;
+  String? _confirmError;
+
   // Phone controllers
   final TextEditingController _phoneController = TextEditingController();
   final TextEditingController _otpController = TextEditingController();
+  String? _phoneError;
+  String? _otpError;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index != _tabIndex) {
+        setState(() => _tabIndex = _tabController.index);
+      }
+    });
   }
 
   @override
@@ -50,47 +66,39 @@ class _LoginScreenState extends State<LoginScreen>
     super.dispose();
   }
 
-  // Email/Password Auth Methods
+  // Email/Password auth -------------------------------------------------------
+
+  bool _isValidEmail(String email) {
+    return RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+        .hasMatch(email);
+  }
+
   void _submitEmailAuth() {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
 
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your email')),
-      );
-      return;
-    }
+    setState(() {
+      _emailError = email.isEmpty
+          ? 'Please enter your email'
+          : (!_isValidEmail(email) ? 'Enter a valid email address' : null);
+      _passwordError = password.isEmpty ? 'Please enter your password' : null;
+      _confirmError = null;
+      if (_isEmailRegisterMode) {
+        if (password != _confirmPasswordController.text) {
+          _confirmError = 'Passwords do not match';
+        } else if (password.length < 6) {
+          _passwordError = 'Use at least 6 characters';
+        }
+      }
+    });
 
-    if (!_isValidEmail(email)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter a valid email address')),
-      );
-      return;
-    }
-
-    if (password.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your password')),
-      );
+    if (_emailError != null ||
+        _passwordError != null ||
+        _confirmError != null) {
       return;
     }
 
     if (_isEmailRegisterMode) {
-      final confirmPassword = _confirmPasswordController.text;
-      if (password != confirmPassword) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Passwords do not match')),
-        );
-        return;
-      }
-      if (password.length < 6) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Password must be at least 6 characters')),
-        );
-        return;
-      }
       context.read<AuthBloc>().add(AuthEmailRegisterRequested(
             email: email,
             password: password,
@@ -106,12 +114,8 @@ class _LoginScreenState extends State<LoginScreen>
     }
   }
 
-  bool _isValidEmail(String email) {
-    return RegExp(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
-        .hasMatch(email);
-  }
+  // Phone OTP auth ------------------------------------------------------------
 
-  // Phone OTP Auth Methods
   String _normalizePhone(String phone) {
     final trimmed = phone.trim();
     if (trimmed.startsWith('+')) return trimmed;
@@ -121,12 +125,10 @@ class _LoginScreenState extends State<LoginScreen>
 
   void _sendOtp() {
     final phone = _phoneController.text.trim();
-    if (phone.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter your phone number')),
-      );
-      return;
-    }
+    setState(() {
+      _phoneError = phone.isEmpty ? 'Please enter your phone number' : null;
+    });
+    if (_phoneError != null) return;
 
     context
         .read<AuthBloc>()
@@ -141,25 +143,26 @@ class _LoginScreenState extends State<LoginScreen>
     final state = context.read<AuthBloc>().state;
     final code = _otpController.text.trim();
 
-    if (code.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter the verification code')),
-      );
-      return;
-    }
-
-    if (state.verificationId == null || state.verificationId!.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please request a code first')),
-      );
-      return;
-    }
+    setState(() {
+      if (code.isEmpty) {
+        _otpError = 'Please enter the verification code';
+      } else if (code.length != 6) {
+        _otpError = 'The code is 6 digits';
+      } else if (state.verificationId == null ||
+          state.verificationId!.isEmpty) {
+        _otpError = 'Please request a code first';
+      } else {
+        _otpError = null;
+      }
+    });
+    if (_otpError != null) return;
 
     context.read<AuthBloc>().add(AuthFirebaseOtpVerifyRequested(otpCode: code));
   }
 
   @override
   Widget build(BuildContext context) {
+    final colors = context.colors;
     return Scaffold(
       body: BlocConsumer<AuthBloc, AuthState>(
         listener: (context, state) {
@@ -171,91 +174,80 @@ class _LoginScreenState extends State<LoginScreen>
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text(state.errorMessage ?? 'An error occurred'),
-                backgroundColor: AppTheme.errorColor,
               ),
             );
           }
         },
         builder: (context, state) {
+          final isLoading = state.status == AuthStatus.loading;
           return SafeArea(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  const SizedBox(height: 40),
-                  const Icon(
-                    Icons.chat_bubble,
-                    size: 80,
-                    color: AppTheme.primaryColor,
-                  ),
-                  const SizedBox(height: 24),
-                  const Text(
-                    'SecureChat',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 32,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.primaryColor,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Sign in to continue',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-
-                  // Tab Bar for Email and Phone
-                  TabBar(
-                    controller: _tabController,
-                    labelColor: AppTheme.primaryColor,
-                    unselectedLabelColor: Colors.grey,
-                    indicatorColor: AppTheme.primaryColor,
-                    tabs: const [
-                      Tab(text: 'Email'),
-                      Tab(text: 'Phone'),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Tab Views
-                  SizedBox(
-                    height: 420,
-                    child: TabBarView(
-                      controller: _tabController,
-                      children: [
-                        _buildEmailTab(state),
-                        _buildPhoneTab(state),
+            child: Stack(
+              children: [
+                Container(
+                  height: 260,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        colors.primaryContainer.withValues(alpha: 0.55),
+                        colors.primaryContainer.withValues(alpha: 0.0),
                       ],
                     ),
                   ),
-
-                  const SizedBox(height: 8),
-                  Row(
+                ),
+                SingleChildScrollView(
+                  padding: const EdgeInsets.all(AppSpacing.xxl),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Expanded(child: Divider()),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Text(
-                          'or',
-                          style: TextStyle(color: Colors.grey[600]),
-                        ),
+                      const SizedBox(height: AppSpacing.xl),
+                      _BrandHeader(),
+                      const SizedBox(height: AppSpacing.xxl),
+                      TabBar(
+                        controller: _tabController,
+                        tabs: const [
+                          Tab(text: 'Email'),
+                          Tab(text: 'Phone'),
+                        ],
                       ),
-                      const Expanded(child: Divider()),
+                      const SizedBox(height: AppSpacing.lg),
+                      // IndexedStack sized by its child: no fixed height,
+                      // no nested scrolling — the page scrolls as one.
+                      IndexedStack(
+                        index: _tabIndex,
+                        children: [
+                          _buildEmailTab(isLoading),
+                          _buildPhoneTab(state, isLoading),
+                        ],
+                      ),
+                      const SizedBox(height: AppSpacing.lg),
+                      Row(
+                        children: [
+                          const Expanded(child: Divider()),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.md),
+                            child: Text(
+                              'or',
+                              style: context.text.bodySmall?.copyWith(
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                          const Expanded(child: Divider()),
+                        ],
+                      ),
+                      const SizedBox(height: AppSpacing.lg),
+                      GoogleSignInButton(
+                        onPressed: _signInWithGoogle,
+                        isLoading: isLoading,
+                      ),
+                      const SizedBox(height: AppSpacing.lg),
                     ],
                   ),
-                  const SizedBox(height: 16),
-                  GoogleSignInButton(
-                    onPressed: _signInWithGoogle,
-                    isLoading: state.status == AuthStatus.loading,
-                  ),
-                ],
-              ),
+                ),
+              ],
             ),
           );
         },
@@ -263,8 +255,8 @@ class _LoginScreenState extends State<LoginScreen>
     );
   }
 
-  Widget _buildEmailTab(AuthState state) {
-    return SingleChildScrollView(
+  Widget _buildEmailTab(bool isLoading) {
+    return AutofillGroup(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -275,179 +267,234 @@ class _LoginScreenState extends State<LoginScreen>
                 _isEmailRegisterMode
                     ? 'Already have an account?'
                     : "Don't have an account?",
-                style: TextStyle(color: Colors.grey[600]),
+                style: context.text.bodyMedium?.copyWith(
+                  color: context.colors.onSurfaceVariant,
+                ),
               ),
               TextButton(
-                onPressed: () => setState(
-                    () => _isEmailRegisterMode = !_isEmailRegisterMode),
+                onPressed: () => setState(() {
+                  _isEmailRegisterMode = !_isEmailRegisterMode;
+                  _emailError = _passwordError = _confirmError = null;
+                }),
                 child: Text(_isEmailRegisterMode ? 'Login' : 'Register'),
               ),
             ],
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: AppSpacing.lg),
           if (_isEmailRegisterMode) ...[
-            TextField(
+            AppTextField(
               controller: _displayNameController,
-              decoration: const InputDecoration(
-                labelText: 'Display Name',
-                hintText: 'Your name',
-                prefixIcon: Icon(Icons.person),
-                border: OutlineInputBorder(),
-              ),
+              labelText: 'Display name',
+              hintText: 'Your name',
+              prefixIcon: const Icon(Icons.person_outline),
+              textInputAction: TextInputAction.next,
+              textCapitalization: TextCapitalization.words,
+              autofillHints: const [AutofillHints.name],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: AppSpacing.lg),
           ],
-          TextField(
+          AppTextField(
             controller: _emailController,
+            labelText: 'Email',
+            hintText: 'you@example.com',
+            prefixIcon: const Icon(Icons.email_outlined),
             keyboardType: TextInputType.emailAddress,
-            decoration: const InputDecoration(
-              labelText: 'Email',
-              hintText: 'you@example.com',
-              prefixIcon: Icon(Icons.email),
-              border: OutlineInputBorder(),
-            ),
+            textInputAction: TextInputAction.next,
+            autofillHints: const [AutofillHints.email],
+            errorText: _emailError,
+            onChanged: (_) {
+              if (_emailError != null) setState(() => _emailError = null);
+            },
           ),
-          const SizedBox(height: 16),
-          TextField(
+          const SizedBox(height: AppSpacing.lg),
+          AppTextField(
             controller: _passwordController,
+            labelText: 'Password',
+            prefixIcon: const Icon(Icons.lock_outline),
             obscureText: _obscurePassword,
-            decoration: InputDecoration(
-              labelText: 'Password',
-              prefixIcon: const Icon(Icons.lock),
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                icon: Icon(
-                    _obscurePassword ? Icons.visibility : Icons.visibility_off),
-                onPressed: () =>
-                    setState(() => _obscurePassword = !_obscurePassword),
-              ),
+            textInputAction: _isEmailRegisterMode
+                ? TextInputAction.next
+                : TextInputAction.done,
+            autofillHints: _isEmailRegisterMode
+                ? const [AutofillHints.newPassword]
+                : const [AutofillHints.password],
+            errorText: _passwordError,
+            onChanged: (_) {
+              if (_passwordError != null) {
+                setState(() => _passwordError = null);
+              }
+            },
+            onSubmitted: (_) {
+              if (!_isEmailRegisterMode) _submitEmailAuth();
+            },
+            suffixIcon: IconButton(
+              icon: Icon(_obscurePassword
+                  ? Icons.visibility_outlined
+                  : Icons.visibility_off_outlined),
+              onPressed: () =>
+                  setState(() => _obscurePassword = !_obscurePassword),
             ),
           ),
           if (_isEmailRegisterMode) ...[
-            const SizedBox(height: 16),
-            TextField(
+            const SizedBox(height: AppSpacing.lg),
+            AppTextField(
               controller: _confirmPasswordController,
+              labelText: 'Confirm password',
+              prefixIcon: const Icon(Icons.lock_outline),
               obscureText: _obscureConfirmPassword,
-              decoration: InputDecoration(
-                labelText: 'Confirm Password',
-                prefixIcon: const Icon(Icons.lock_outline),
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(_obscureConfirmPassword
-                      ? Icons.visibility
-                      : Icons.visibility_off),
-                  onPressed: () => setState(
-                      () => _obscureConfirmPassword = !_obscureConfirmPassword),
-                ),
+              textInputAction: TextInputAction.done,
+              autofillHints: const [AutofillHints.newPassword],
+              errorText: _confirmError,
+              onChanged: (_) {
+                if (_confirmError != null) {
+                  setState(() => _confirmError = null);
+                }
+              },
+              onSubmitted: (_) => _submitEmailAuth(),
+              suffixIcon: IconButton(
+                icon: Icon(_obscureConfirmPassword
+                    ? Icons.visibility_outlined
+                    : Icons.visibility_off_outlined),
+                onPressed: () => setState(() =>
+                    _obscureConfirmPassword = !_obscureConfirmPassword),
               ),
             ),
           ],
-          const SizedBox(height: 24),
-          ElevatedButton(
-            onPressed:
-                state.status == AuthStatus.loading ? null : _submitEmailAuth,
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-            child: state.status == AuthStatus.loading
-                ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : Text(
-                    _isEmailRegisterMode ? 'Register' : 'Login',
-                    style: const TextStyle(fontSize: 16),
-                  ),
+          const SizedBox(height: AppSpacing.xl),
+          AppButton(
+            label: _isEmailRegisterMode ? 'Create account' : 'Login',
+            loading: isLoading,
+            onPressed: _submitEmailAuth,
           ),
         ],
       ),
     );
   }
 
-  Widget _buildPhoneTab(AuthState state) {
+  Widget _buildPhoneTab(AuthState state, bool isLoading) {
     final isOtpStep = state.otpPhone != null;
-    final isSending = state.status == AuthStatus.loading;
 
-    return SingleChildScrollView(
+    if (!isOtpStep) {
+      return AutofillGroup(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            AppTextField(
+              controller: _phoneController,
+              labelText: 'Phone number',
+              hintText: '+91 98765 43210',
+              prefixIcon: const Icon(Icons.phone_outlined),
+              keyboardType: TextInputType.phone,
+              textInputAction: TextInputAction.done,
+              autofillHints: const [AutofillHints.telephoneNumber],
+              errorText: _phoneError,
+              onChanged: (_) {
+                if (_phoneError != null) {
+                  setState(() => _phoneError = null);
+                }
+              },
+              onSubmitted: (_) => _sendOtp(),
+            ),
+            const SizedBox(height: AppSpacing.xl),
+            AppButton(
+              label: 'Send code',
+              loading: isLoading,
+              onPressed: _sendOtp,
+            ),
+            const SizedBox(height: AppSpacing.sm),
+            Text(
+              'You will receive a 6-digit verification code by SMS.',
+              textAlign: TextAlign.center,
+              style: context.text.bodySmall?.copyWith(
+                color: context.colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return AutofillGroup(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (!isOtpStep) ...[
-            TextField(
-              controller: _phoneController,
-              keyboardType: TextInputType.phone,
-              decoration: const InputDecoration(
-                labelText: 'Phone Number',
-                hintText: '+1234567890',
-                prefixIcon: Icon(Icons.phone),
-                border: OutlineInputBorder(),
-              ),
+          Text(
+            'Enter the 6-digit code sent to\n${state.otpPhone ?? ''}',
+            textAlign: TextAlign.center,
+            style: context.text.bodyMedium?.copyWith(
+              color: context.colors.onSurfaceVariant,
             ),
-            const SizedBox(height: 24),
-            ElevatedButton(
-              onPressed: isSending ? null : _sendOtp,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              child: isSending
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text('Send OTP', style: TextStyle(fontSize: 16)),
-            ),
-          ] else ...[
-            Text(
-              'Enter the 6-digit code sent to\n${state.otpPhone ?? ''}',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-            ),
-            const SizedBox(height: 24),
-            TextField(
-              controller: _otpController,
-              keyboardType: TextInputType.number,
-              maxLength: 6,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 22, letterSpacing: 8),
-              decoration: const InputDecoration(
-                labelText: 'Verification Code',
-                border: OutlineInputBorder(),
-              ),
-              onSubmitted: (_) => _verifyOtp(),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: isSending ? null : _verifyOtp,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              child: isSending
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Text('Verify & Continue',
-                      style: TextStyle(fontSize: 16)),
-            ),
-            TextButton(
-              onPressed: isSending ? null : _sendOtp,
-              child: const Text('Resend code'),
-            ),
-          ],
+          ),
+          const SizedBox(height: AppSpacing.xl),
+          AppTextField(
+            controller: _otpController,
+            labelText: 'Verification code',
+            style: const TextStyle(fontSize: 22, letterSpacing: 8),
+            textAlign: TextAlign.center,
+            keyboardType: TextInputType.number,
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            maxLength: 6,
+            textInputAction: TextInputAction.done,
+            autofillHints: const [AutofillHints.oneTimeCode],
+            errorText: _otpError,
+            onChanged: (_) {
+              if (_otpError != null) setState(() => _otpError = null);
+            },
+            onSubmitted: (_) => _verifyOtp(),
+          ),
+          const SizedBox(height: AppSpacing.lg),
+          AppButton(
+            label: 'Verify & continue',
+            loading: isLoading,
+            onPressed: _verifyOtp,
+          ),
+          AppButton.ghost(
+            label: 'Resend code',
+            onPressed: isLoading ? null : _sendOtp,
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _BrandHeader extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Column(
+      children: [
+        Container(
+          padding: const EdgeInsets.all(AppSpacing.md),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(AppRadius.xl),
+            boxShadow: AppShadows.card(context.theme.brightness),
+          ),
+          child: Image.asset(
+            'assets/images/logo.png',
+            width: 72,
+            height: 72,
+          ),
+        ),
+        const SizedBox(height: AppSpacing.lg),
+        Text('SecureChat', style: context.text.displayMedium),
+        const SizedBox(height: AppSpacing.xs),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.lock_outline,
+                size: 14, color: colors.onSurfaceVariant),
+            const SizedBox(width: AppSpacing.xs),
+            Text(
+              'End-to-end encrypted messaging',
+              style: context.text.bodyMedium?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

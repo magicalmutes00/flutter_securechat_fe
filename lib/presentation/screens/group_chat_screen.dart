@@ -1,16 +1,17 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/models/group_model.dart';
 import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
-import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/websocket_service.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/ui/ui.dart';
 
 class GroupChatScreen extends StatefulWidget {
   final Group group;
@@ -35,7 +36,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   List<Message> _messages = [];
   List<User> _members = [];
   bool _isLoading = true;
-  bool _isTyping = false;
+  bool _loadError = false;
+  bool _peerTyping = false;
+  bool _typingActive = false;
   Timer? _typingClearTimer;
   StreamSubscription? _messageSub;
   StreamSubscription? _typingSub;
@@ -52,7 +55,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _loadMessages() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _loadError = false;
+    });
     try {
       if (_members.isEmpty) {
         final groupData = await _apiClient.getGroup(widget.group.id);
@@ -71,19 +77,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           .reversed
           .toList();
 
-      final decrypted = <Message>[];
-      for (final m in fetched) {
-        decrypted.add(await _decryptGroupMessage(m));
-      }
-
       if (!mounted) return;
       setState(() {
-        _messages = decrypted;
+        _messages = fetched.map(_asDisplayable).toList();
         _isLoading = false;
       });
-    } catch (e) {
+      _jumpToLatest();
+    } catch (_) {
       if (!mounted) return;
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+        _loadError = _messages.isEmpty;
+      });
     }
   }
 
@@ -98,11 +103,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _typingSub = _wsService.groupTypingStream.listen((data) {
       if (data['group_id'] != widget.group.id) return;
       final isTyping = data['is_typing'] as bool? ?? false;
-      setState(() => _isTyping = isTyping);
+      setState(() => _peerTyping = isTyping);
       if (isTyping) {
         _typingClearTimer?.cancel();
         _typingClearTimer = Timer(const Duration(seconds: 4), () {
-          if (mounted) setState(() => _isTyping = false);
+          if (mounted) setState(() => _peerTyping = false);
         });
       } else {
         _typingClearTimer?.cancel();
@@ -115,47 +120,42 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (message.senderId == _currentUserId) return;
     setState(() {
       if (!_messages.any((m) => m.id == message.id)) {
-        _messages.add(message);
+        _messages.add(_asDisplayable(message));
       }
-      _scrollToBottom();
     });
+    _scrollToLatest();
   }
 
-  Future<Message> _decryptGroupMessage(Message message) async {
-    if (message.encryption != 'sgkey' ||
-        message.cipherBody == null ||
-        message.groupId == null) {
-      return message;
-    }
-    try {
-      final plaintext = await E2eeService.instance.decryptGroupText(
-        currentUserId: _currentUserId ?? '',
-        groupId: message.groupId!,
-        senderId: message.senderId,
-        cipherBody: message.cipherBody!,
-        distributionB64: message.distribution,
-      );
-      return message.copyWith(
-        content: plaintext,
+  /// Legacy E2EE-era group messages carry ciphertext instead of content.
+  Message _asDisplayable(Message m) {
+    if (m.content.isEmpty &&
+        (m.encryption == 'signal' || m.encryption == 'sgkey')) {
+      return m.copyWith(
+        content: '🔒 Encrypted message from before encryption was removed',
         encryption: 'none',
         cipherBody: null,
         cipherType: null,
-        distribution: null,
-      );
-    } catch (e) {
-      return message.copyWith(
-        content: '🔒 Unable to decrypt message',
-        encryption: 'none',
       );
     }
+    return m;
   }
 
-  void _scrollToBottom() {
+  void _jumpToLatest() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.jumpTo(
+          _scrollController.position.maxScrollExtent,
+        );
+      }
+    });
+  }
+
+  void _scrollToLatest() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
-          0,
-          duration: const Duration(milliseconds: 250),
+          _scrollController.position.maxScrollExtent,
+          duration: AppDurations.medium,
           curve: Curves.easeOut,
         );
       }
@@ -178,43 +178,24 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       createdAt: DateTime.now(),
     );
     setState(() => _messages.add(tempMessage));
-
-    Map<String, dynamic> crypto;
-    try {
-      crypto = await E2eeService.instance.prepareOutgoingGroupText(
-        currentUserId: _currentUserId!,
-        groupId: widget.group.id,
-        plaintext: content,
-      );
-    } on E2eeEncryptionException catch (e) {
-      // Encryption failed: nothing was sent. Remove the optimistic bubble
-      // and explain why instead of silently sending plaintext.
-      if (!mounted) return;
-      setState(() => _messages.remove(tempMessage));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message)),
-      );
-      return;
-    }
-    final usesSignal = crypto['encryption'] == 'sgkey';
+    _scrollToLatest();
 
     _wsService.sendGroupMessage(
       groupId: widget.group.id,
       messageType: 'text',
-      content: usesSignal ? '' : content,
-      encryption: crypto['encryption'] as String? ?? 'none',
-      cipherType: crypto['cipher_type'] as int?,
-      cipherBody: crypto['cipher_body'] as String?,
-      distribution: crypto['distribution'] as String?,
+      content: content,
+      encryption: 'none',
     );
   }
 
   void _onTypingChanged(String value) {
-    if (value.isNotEmpty && !_isTyping) {
-      setState(() => _isTyping = true);
+    // Composer typing state only drives the wire event, never the subtitle
+    // (the subtitle reflects *other* members typing).
+    if (value.isNotEmpty && !_typingActive) {
+      _typingActive = true;
       _wsService.sendGroupTyping(widget.group.id, true);
-    } else if (value.isEmpty && _isTyping) {
-      setState(() => _isTyping = false);
+    } else if (value.isEmpty && _typingActive) {
+      _typingActive = false;
       _wsService.sendGroupTyping(widget.group.id, false);
     }
   }
@@ -230,6 +211,16 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     super.dispose();
   }
 
+  String _senderLabel(String senderId) {
+    if (senderId == _currentUserId) return 'You';
+    for (final m in _members) {
+      if (m.id == senderId) {
+        return m.displayName ?? m.phone ?? m.email ?? 'Unknown';
+      }
+    }
+    return 'Unknown';
+  }
+
   @override
   Widget build(BuildContext context) {
     final memberNames = _members
@@ -239,20 +230,32 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        titleSpacing: 0,
+        title: Row(
           children: [
-            Text(
-              widget.group.name,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            Text(
-              _isTyping
-                  ? 'typing...'
-                  : '${_members.length} members${memberNames.isNotEmpty ? ' · ${memberNames.take(3).join(', ')}${memberNames.length > 3 ? '...' : ''}' : ''}',
-              style: const TextStyle(
-                fontSize: 12,
-                color: AppTheme.onlineStatusColor,
+            AppAvatar(label: widget.group.name, radius: 18),
+            const SizedBox(width: AppSpacing.md),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(widget.group.name,
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                  Text(
+                    _peerTyping
+                        ? 'typing...'
+                        : '${_members.length} member${_members.length == 1 ? '' : 's'}${memberNames.isNotEmpty ? ' · ${memberNames.take(3).join(', ')}${memberNames.length > 3 ? '…' : ''}' : ''}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.text.bodySmall?.copyWith(
+                      color: _peerTyping
+                          ? context.appColors.typingIndicator
+                          : context.colors.onSurfaceVariant,
+                      fontStyle:
+                          _peerTyping ? FontStyle.italic : FontStyle.normal,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -262,108 +265,116 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
         children: [
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
-                : _messages.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No messages yet. Say hi!',
-                          style: TextStyle(color: Colors.grey[600]),
-                        ),
+                ? const SkeletonList(itemCount: 4)
+                : _loadError
+                    ? ErrorState(
+                        message: 'Failed to load messages',
+                        onRetry: _loadMessages,
                       )
-                    : ListView.builder(
-                        controller: _scrollController,
-                        padding: const EdgeInsets.all(12),
-                        itemCount: _messages.length,
-                        itemBuilder: (context, index) {
-                          final message = _messages[index];
-                          final isMe = message.senderId == _currentUserId;
-                          final sender = _members
-                              .where((m) => m.id == message.senderId)
-                              .toList();
-                          return Column(
-                            crossAxisAlignment: isMe
-                                ? CrossAxisAlignment.end
-                                : CrossAxisAlignment.start,
-                            children: [
-                              if (!isMe && sender.isNotEmpty)
-                                Padding(
-                                  padding:
-                                      const EdgeInsets.only(left: 8, bottom: 2),
-                                  child: Text(
-                                    sender.first.displayName ??
-                                        sender.first.phone ??
-                                        'Unknown',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      color: AppTheme.primaryColor,
-                                    ),
-                                  ),
-                                ),
-                              MessageBubble(
-                                message: message,
-                                isMe: isMe,
-                              ),
-                            ],
-                          );
-                        },
-                      ),
+                    : _messages.isEmpty
+                        ? EmptyState(
+                            icon: Icons.group_outlined,
+                            title: 'No messages yet',
+                            body:
+                                'Say hello to ${widget.group.name} — group messages are end-to-end encrypted.',
+                          )
+                        : ListView(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: AppSpacing.lg,
+                                vertical: AppSpacing.sm),
+                            children: _buildMessageWidgets(),
+                          ),
           ),
-          _buildInputBar(),
+          ChatInputBar(
+            controller: _messageController,
+            onSend: _sendMessage,
+            onChanged: _onTypingChanged,
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildInputBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            IconButton(
-              icon: const Icon(Icons.attach_file, color: AppTheme.primaryColor),
-              onPressed: () {},
-            ),
-            Expanded(
-              child: TextField(
-                controller: _messageController,
-                decoration: InputDecoration(
-                  hintText: 'Type a message...',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
-                  ),
-                  filled: true,
-                  fillColor: Colors.grey[100],
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 20,
-                    vertical: 10,
+  /// Oldest→newest with day dividers and tight same-sender grouping.
+  /// (This list is *not* reversed, unlike the 1:1 chat.)
+  List<Widget> _buildMessageWidgets() {
+    final widgets = <Widget>[];
+    DateTime? lastDay;
+    String? lastSender;
+    for (final message in _messages) {
+      final created = message.createdAt;
+      final day = DateTime(created.year, created.month, created.day);
+      if (lastDay == null || day != lastDay) {
+        widgets.add(_GroupDayDivider(day: day));
+        lastDay = day;
+        lastSender = null;
+      }
+      final isMe = message.senderId == _currentUserId;
+      final tight = lastSender == message.senderId;
+      lastSender = message.senderId;
+      widgets.add(
+        Padding(
+          padding: EdgeInsets.symmetric(vertical: tight ? 0 : 3),
+          child: Column(
+            crossAxisAlignment:
+                isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+            children: [
+              if (!isMe && !tight)
+                Padding(
+                  padding: const EdgeInsets.only(
+                      left: AppSpacing.sm, bottom: AppSpacing.xs),
+                  child: Text(
+                    _senderLabel(message.senderId),
+                    style: context.text.labelSmall?.copyWith(
+                      color: context.appColors.primaryEmphasis,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-                maxLines: null,
-                textCapitalization: TextCapitalization.sentences,
-                onChanged: _onTypingChanged,
-              ),
+              MessageBubble(message: message, isMe: isMe),
+            ],
+          ),
+        ),
+      );
+    }
+    return widgets;
+  }
+}
+
+class _GroupDayDivider extends StatelessWidget {
+  final DateTime day;
+
+  const _GroupDayDivider({required this.day});
+
+  String _label(DateTime now) {
+    final today = DateTime(now.year, now.month, now.day);
+    final diff = today.difference(day).inDays;
+    if (diff <= 0) return 'Today';
+    if (diff == 1) return 'Yesterday';
+    if (diff < 7) return DateFormat('EEEE').format(day);
+    return DateFormat('MMM d, y').format(day);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: AppSpacing.sm),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: AppSpacing.md, vertical: AppSpacing.xs),
+          decoration: BoxDecoration(
+            color: context.colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(AppRadius.pill),
+          ),
+          child: Text(
+            _label(DateTime.now()),
+            style: context.text.labelSmall?.copyWith(
+              color: context.colors.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
             ),
-            const SizedBox(width: 8),
-            CircleAvatar(
-              backgroundColor: AppTheme.primaryColor,
-              child: IconButton(
-                icon: const Icon(Icons.send, color: Colors.white, size: 20),
-                onPressed: _sendMessage,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );

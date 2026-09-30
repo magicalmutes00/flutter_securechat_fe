@@ -15,6 +15,7 @@ class ChatState extends Equatable {
   final List<Message> messages;
   final Map<String, User> conversations;
   final Map<String, Message> lastMessages;
+  final Map<String, int> unreadCounts;
   final String? currentChatUserId;
   final String? errorMessage;
   final bool hasMoreMessages;
@@ -28,6 +29,7 @@ class ChatState extends Equatable {
     this.messages = const [],
     this.conversations = const {},
     this.lastMessages = const {},
+    this.unreadCounts = const {},
     this.currentChatUserId,
     this.errorMessage,
     this.hasMoreMessages = true,
@@ -42,6 +44,7 @@ class ChatState extends Equatable {
     List<Message>? messages,
     Map<String, User>? conversations,
     Map<String, Message>? lastMessages,
+    Map<String, int>? unreadCounts,
     String? currentChatUserId,
     String? errorMessage,
     bool? hasMoreMessages,
@@ -55,6 +58,7 @@ class ChatState extends Equatable {
       messages: messages ?? this.messages,
       conversations: conversations ?? this.conversations,
       lastMessages: lastMessages ?? this.lastMessages,
+      unreadCounts: unreadCounts ?? this.unreadCounts,
       currentChatUserId: currentChatUserId ?? this.currentChatUserId,
       errorMessage: errorMessage ?? this.errorMessage,
       hasMoreMessages: hasMoreMessages ?? this.hasMoreMessages,
@@ -71,6 +75,7 @@ class ChatState extends Equatable {
         messages,
         conversations,
         lastMessages,
+        unreadCounts,
         currentChatUserId,
         errorMessage,
         hasMoreMessages,

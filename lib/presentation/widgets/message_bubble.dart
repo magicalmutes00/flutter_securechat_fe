@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:intl/intl.dart';
-import '../../core/theme/app_theme.dart';
-import '../../data/models/message_model.dart';
-import 'encrypted_image.dart';
 
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_tokens.dart';
+import '../../core/utils/time_format.dart';
+import '../../data/models/message_model.dart';
+import 'message_image.dart';
+import 'ui/ui.dart';
+
+/// Chat bubble. Sent messages are solid brand blue with white copy;
+/// received messages are surface-toned. Read receipts use the lime accent.
 class MessageBubble extends StatefulWidget {
   final Message message;
   final bool isMe;
@@ -35,10 +40,10 @@ class _MessageBubbleState extends State<MessageBubble>
   void initState() {
     super.initState();
     _animationController = AnimationController(
-      duration: const Duration(milliseconds: 300),
+      duration: AppDurations.fast,
       vsync: this,
     );
-    _scaleAnimation = Tween<double>(begin: 0.8, end: 1.0).animate(
+    _scaleAnimation = Tween<double>(begin: 0.85, end: 1.0).animate(
       CurvedAnimation(parent: _animationController, curve: Curves.easeOut),
     );
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
@@ -53,31 +58,34 @@ class _MessageBubbleState extends State<MessageBubble>
     super.dispose();
   }
 
-  void _showDeleteDialog() {
+  void _showActionsSheet() {
     showModalBottomSheet(
       context: context,
-      builder: (context) => SafeArea(
-        child: Wrap(
+      builder: (context) => SheetScaffold(
+        title: 'Message',
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.delete, color: AppTheme.errorColor),
-              title: const Text('Delete Message'),
-              onTap: () {
-                Navigator.pop(context);
-                widget.onDelete?.call();
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('Copy'),
-              onTap: () {
-                Navigator.pop(context);
-                if (widget.message.isTextMessage) {
+            if (widget.isMe && widget.onDelete != null)
+              ListTile(
+                leading:
+                    Icon(Icons.delete_outline, color: context.colors.error),
+                title: const Text('Delete message'),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onDelete?.call();
+                },
+              ),
+            if (widget.message.isTextMessage)
+              ListTile(
+                leading: const Icon(Icons.copy_outlined),
+                title: const Text('Copy text'),
+                onTap: () {
+                  Navigator.pop(context);
                   Clipboard.setData(
                       ClipboardData(text: widget.message.content));
-                }
-              },
-            ),
+                },
+              ),
           ],
         ),
       ),
@@ -86,6 +94,10 @@ class _MessageBubbleState extends State<MessageBubble>
 
   @override
   Widget build(BuildContext context) {
+    final appColors = context.appColors;
+    final bubbleColor =
+        widget.isMe ? appColors.sentBubble : appColors.receivedBubble;
+
     return AnimatedBuilder(
       animation: _animationController,
       builder: (context, child) {
@@ -99,42 +111,41 @@ class _MessageBubbleState extends State<MessageBubble>
       },
       child: GestureDetector(
         onTap: widget.onTap,
-        onLongPress: widget.isMe ? _showDeleteDialog : widget.onLongPress,
+        onLongPress: _showActionsSheet,
         child: Align(
-          alignment: widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
-          child: Container(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.75,
-            ),
-            decoration: BoxDecoration(
-              color: widget.isMe
-                  ? AppTheme.sentMessageColor
-                  : AppTheme.receivedMessageColor,
-              borderRadius: BorderRadius.only(
-                topLeft: const Radius.circular(16),
-                topRight: const Radius.circular(16),
-                bottomLeft:
-                    widget.isMe ? const Radius.circular(16) : Radius.zero,
-                bottomRight:
-                    widget.isMe ? Radius.zero : const Radius.circular(16),
+          alignment:
+              widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
+          child: LayoutBuilder(
+            builder: (context, constraints) => Container(
+              margin: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+              padding: const EdgeInsets.symmetric(
+                  horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+              constraints: BoxConstraints(
+                maxWidth: constraints.maxWidth * 0.78,
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.05),
-                  blurRadius: 5,
-                  offset: const Offset(0, 2),
+              decoration: BoxDecoration(
+                color: bubbleColor,
+                borderRadius: BorderRadius.only(
+                  topLeft: const Radius.circular(AppRadius.lg),
+                  topRight: const Radius.circular(AppRadius.lg),
+                  bottomLeft: widget.isMe
+                      ? const Radius.circular(AppRadius.lg)
+                      : Radius.zero,
+                  bottomRight: widget.isMe
+                      ? Radius.zero
+                      : const Radius.circular(AppRadius.lg),
                 ),
-              ],
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                _buildMessageContent(),
-                const SizedBox(height: 4),
-                _buildMessageInfo(),
-              ],
+                boxShadow: AppShadows.card(Theme.of(context).brightness),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildMessageContent(),
+                  const SizedBox(height: AppSpacing.xs),
+                  _buildMessageInfo(),
+                ],
+              ),
             ),
           ),
         ),
@@ -142,36 +153,55 @@ class _MessageBubbleState extends State<MessageBubble>
     );
   }
 
+  Color _contentColor() {
+    final appColors = context.appColors;
+    return widget.isMe ? appColors.onSentBubble : appColors.onReceivedBubble;
+  }
+
+  Color _accentOnBubble() {
+    // Icons inside a sent bubble sit on blue, so they use the bubble's own
+    // foreground; inside a received bubble they use the theme emphasis.
+    if (widget.isMe) return context.appColors.onSentBubble;
+    return context.appColors.primaryEmphasis;
+  }
+
   Widget _buildMessageContent() {
+    final contentColor = _contentColor();
     if (widget.message.isTextMessage) {
       return Text(
         widget.message.content,
-        style: const TextStyle(fontSize: 15),
+        style: context.text.bodyLarge?.copyWith(color: contentColor),
       );
     } else if (widget.message.isImageMessage) {
-      return EncryptedImage(message: widget.message);
+      return MessageImage(message: widget.message);
     } else if (widget.message.isVideoMessage) {
       return Container(
         height: 150,
         width: 200,
         decoration: BoxDecoration(
-          color: Colors.grey[300],
-          borderRadius: BorderRadius.circular(12),
+          color: context.colors.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
-        child: const Center(
+        child: Center(
           child: Icon(Icons.play_circle_fill,
-              size: 50, color: AppTheme.primaryColor),
+              size: 50, color: _accentOnBubble()),
         ),
       );
     } else if (widget.message.isAudioMessage) {
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.audiotrack, color: AppTheme.primaryColor),
-          const SizedBox(width: 8),
-          Text(
-            widget.message.fileName ?? 'Audio',
-            style: const TextStyle(decoration: TextDecoration.underline),
+          Icon(Icons.audiotrack, color: _accentOnBubble()),
+          const SizedBox(width: AppSpacing.sm),
+          Flexible(
+            child: Text(
+              widget.message.fileName ?? 'Audio',
+              style: context.text.bodyMedium?.copyWith(
+                color: contentColor,
+                decoration: TextDecoration.underline,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ],
       );
@@ -179,21 +209,27 @@ class _MessageBubbleState extends State<MessageBubble>
       return Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(Icons.insert_drive_file, color: AppTheme.primaryColor),
-          const SizedBox(width: 8),
+          Icon(Icons.insert_drive_file, color: _accentOnBubble()),
+          const SizedBox(width: AppSpacing.sm),
           Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   widget.message.fileName ?? 'Document',
-                  style: const TextStyle(fontWeight: FontWeight.w500),
+                  style: context.text.bodyMedium?.copyWith(
+                    color: contentColor,
+                    fontWeight: FontWeight.w600,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
                 if (widget.message.fileSize != null)
                   Text(
                     _formatFileSize(widget.message.fileSize!),
-                    style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    style: context.text.bodySmall?.copyWith(
+                      color: contentColor.withValues(alpha: 0.75),
+                    ),
                   ),
               ],
             ),
@@ -205,18 +241,18 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildMessageInfo() {
+    final infoColor = widget.isMe
+        ? context.appColors.onSentBubble.withValues(alpha: 0.8)
+        : context.colors.onSurfaceVariant;
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          DateFormat('HH:mm').format(widget.message.createdAt),
-          style: TextStyle(
-            fontSize: 11,
-            color: Colors.grey[600],
-          ),
+          formatChatTime(widget.message.createdAt),
+          style: context.text.labelSmall?.copyWith(color: infoColor),
         ),
         if (widget.isMe) ...[
-          const SizedBox(width: 4),
+          const SizedBox(width: AppSpacing.xs),
           _buildStatusIcon(),
         ],
       ],
@@ -224,23 +260,27 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildStatusIcon() {
+    // Read receipts pop in lime on the blue bubble; delivery states stay
+    // quiet so "read" is unmistakable.
     if (widget.message.isRead) {
       return const Icon(
         Icons.done_all,
-        size: 14,
-        color: AppTheme.primaryColor,
+        size: 15,
+        color: AppPalette.lime400,
       );
     } else if (widget.message.isDelivered) {
-      return const Icon(
+      return Icon(
         Icons.done_all,
-        size: 14,
-        color: Colors.grey,
+        size: 15,
+        color:
+            context.appColors.onSentBubble.withValues(alpha: 0.8),
       );
     } else {
-      return const Icon(
+      return Icon(
         Icons.done,
-        size: 14,
-        color: Colors.grey,
+        size: 15,
+        color:
+            context.appColors.onSentBubble.withValues(alpha: 0.8),
       );
     }
   }

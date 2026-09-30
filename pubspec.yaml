@@ -48,9 +48,6 @@ dependencies:
   # Security
   flutter_secure_storage: ^9.0.0
   crypto: ^3.0.3
-  convert: ^3.1.2
-  fixnum: ^1.1.0
-  pointycastle: ^4.0.0
 
   # Contacts
   contacts_service:
@@ -59,7 +56,6 @@ dependencies:
 
   # Notifications
   flutter_local_notifications: ^18.0.1
-  libsignal_protocol_dart: ^0.8.2
 
   # WebRTC (voice/video calls)
   flutter_webrtc: ^1.6.0
@@ -78,7 +74,19 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
-  
+
   assets:
     - assets/images/
     - assets/icons/
+
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-latin-400-normal.ttf
+          weight: 400
+        - asset: assets/fonts/Inter-latin-500-normal.ttf
+          weight: 500
+        - asset: assets/fonts/Inter-latin-600-normal.ttf
+          weight: 600
+        - asset: assets/fonts/Inter-latin-700-normal.ttf
+          weight: 700

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_colors.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/services/rtc/call_manager.dart';
 import 'call_screen.dart';
 
@@ -54,7 +55,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             const SizedBox(height: 24),
             CircleAvatar(
               radius: 48,
-              backgroundColor: AppTheme.primaryColor,
+              backgroundColor: AppPalette.blue600,
               child: Text(
                 widget.peerName.isEmpty
                     ? '?'
@@ -65,10 +66,8 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
             const SizedBox(height: 24),
             Text(
               widget.peerName,
-              style: const TextStyle(
+              style: context.text.headlineLarge?.copyWith(
                 color: Colors.white,
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
               ),
             ),
             const SizedBox(height: 8),
@@ -76,7 +75,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
               widget.isVideoCall
                   ? 'Incoming video call...'
                   : 'Incoming voice call...',
-              style: TextStyle(color: Colors.grey[400]),
+              style: const TextStyle(color: Colors.white70),
             ),
             const SizedBox(height: 64),
             Row(
@@ -86,7 +85,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                   children: [
                     CircleAvatar(
                       radius: 32,
-                      backgroundColor: Colors.red,
+                      backgroundColor: context.colors.error,
                       child: IconButton(
                         icon: const Icon(Icons.call_end, color: Colors.white),
                         onPressed: _decline,
@@ -103,9 +102,10 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
                   children: [
                     CircleAvatar(
                       radius: 32,
-                      backgroundColor: Colors.green,
+                      backgroundColor: AppPalette.lime400,
                       child: IconButton(
-                        icon: const Icon(Icons.call, color: Colors.white),
+                        icon: const Icon(Icons.call,
+                            color: AppPalette.onLime),
                         onPressed: _accept,
                       ),
                     ),

@@ -3,30 +3,23 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../../core/constants/app_constants.dart';
-import '../../core/theme/app_theme.dart';
+import '../../core/theme/app_tokens.dart';
 import '../../data/models/message_model.dart';
 import '../../data/services/api_client.dart';
-import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/media_cache_service.dart';
 
-/// Displays an image attachment, downloading the (possibly encrypted) blob with
-/// the authenticated API client and decrypting it in memory before rendering.
-///
-/// The AES key/nonce come from the decrypted Signal envelope held in
-/// [Message.mediaKey]/[Message.mediaNonce]; they never touch disk. The
-/// *decrypted* image is cached via [MediaCacheService] (encrypted at rest)
-/// keyed by the attachment path, so re-opening a conversation — or viewing
-/// media offline — does not re-download it.
-class EncryptedImage extends StatefulWidget {
-  const EncryptedImage({super.key, required this.message});
+/// Displays an image attachment, downloading the blob with the authenticated
+/// API client and caching the bytes for instant re-viewing and offline use.
+class MessageImage extends StatefulWidget {
+  const MessageImage({super.key, required this.message});
 
   final Message message;
 
   @override
-  State<EncryptedImage> createState() => _EncryptedImageState();
+  State<MessageImage> createState() => _MessageImageState();
 }
 
-class _EncryptedImageState extends State<EncryptedImage> {
+class _MessageImageState extends State<MessageImage> {
   final ApiClient _api = ApiClient();
   final MediaCacheService _cache = MediaCacheService();
   Uint8List? _bytes;
@@ -39,7 +32,7 @@ class _EncryptedImageState extends State<EncryptedImage> {
   }
 
   @override
-  void didUpdateWidget(EncryptedImage oldWidget) {
+  void didUpdateWidget(MessageImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.message.id != widget.message.id) {
       _bytes = null;
@@ -64,12 +57,7 @@ class _EncryptedImageState extends State<EncryptedImage> {
 
     try {
       final raw = await _api.downloadFileBytes('${AppConstants.baseUrl}$path');
-      Uint8List decoded = Uint8List.fromList(raw);
-      if (widget.message.mediaKey != null &&
-          widget.message.mediaNonce != null) {
-        decoded =
-            await E2eeService.instance.decryptMediaBytes(widget.message, raw);
-      }
+      final decoded = Uint8List.fromList(raw);
       await _cache.write(path, decoded);
       if (!mounted) return;
       setState(() => _bytes = decoded);
@@ -85,10 +73,10 @@ class _EncryptedImageState extends State<EncryptedImage> {
       return Container(
         height: 200,
         width: 200,
-        color: Colors.grey[300],
-        child: const Center(
-          child:
-              Icon(Icons.lock_outline, size: 40, color: AppTheme.primaryColor),
+        color: context.colors.surfaceContainerHighest,
+        child: Center(
+          child: Icon(Icons.broken_image,
+              size: 40, color: context.colors.onSurfaceVariant),
         ),
       );
     }
@@ -96,7 +84,7 @@ class _EncryptedImageState extends State<EncryptedImage> {
       return Container(
         height: 200,
         width: 200,
-        color: Colors.grey[300],
+        color: context.colors.surfaceContainerHighest,
         child: const Center(child: CircularProgressIndicator()),
       );
     }
@@ -109,8 +97,9 @@ class _EncryptedImageState extends State<EncryptedImage> {
         errorBuilder: (_, __, ___) => Container(
           height: 200,
           width: 200,
-          color: Colors.grey[300],
-          child: const Icon(Icons.broken_image, size: 50),
+          color: context.colors.surfaceContainerHighest,
+          child: Icon(Icons.broken_image,
+              size: 50, color: context.colors.onSurfaceVariant),
         ),
       ),
     );
