@@ -108,6 +108,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           'message_type': message.messageType,
           'content': message.content,
           'encryption': 'none',
+          if (message.filePath != null) 'file_url': message.filePath,
+          if (message.fileName != null) 'file_name': message.fileName,
+          if (message.fileSize != null) 'file_size': message.fileSize,
+          if (message.mediaType != null) 'media_type': message.mediaType,
         });
         await _localStorage.removeFromOutbox(currentUserId, message.id);
       } catch (_) {
@@ -330,18 +334,79 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         filename: event.filePath.split('/').last.split('\\').last,
       );
 
-      if (uploadResult['success'] == true) {
-        if (_wsService.isConnected) {
-          _wsService.sendMessage(
-            receiverId: event.receiverId,
-            messageType: event.messageType,
-            content: '',
-            fileUrl: uploadResult['url'],
-            fileName: uploadResult['file_name'],
-            fileSize: uploadResult['file_size'],
-            mediaType: uploadResult['media_type'],
-            encryption: 'none',
-          );
+      if (uploadResult['success'] != true) {
+        throw Exception(uploadResult['message'] ?? 'Upload failed');
+      }
+      final fileUrl = uploadResult['url'] as String?;
+      if (fileUrl == null || fileUrl.isEmpty) {
+        throw Exception('Upload failed');
+      }
+
+      // Optimistic bubble so the sender sees the file immediately (the
+      // server echo later swaps this temp message for the real one).
+      final currentUserId = _wsService.currentUserId ?? '';
+      final tempMessage = Message(
+        id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
+        senderId: currentUserId,
+        receiverId: event.receiverId,
+        messageType: event.messageType,
+        content: '',
+        filePath: fileUrl,
+        fileName: uploadResult['file_name'] as String?,
+        fileSize: (uploadResult['file_size'] as num?)?.toInt(),
+        mediaType: uploadResult['media_type'] as String?,
+        status: 'sent',
+        createdAt: DateTime.now(),
+      );
+
+      final newLastMessages =
+          Map<String, Message>.from(state.lastMessages);
+      newLastMessages[event.receiverId] = tempMessage;
+      final updatedConversations =
+          Map<String, User>.from(state.conversations);
+      if (!updatedConversations.containsKey(event.receiverId)) {
+        updatedConversations[event.receiverId] = User(
+          id: event.receiverId,
+          displayName: null,
+          email: null,
+          phone: null,
+          avatarUrl: null,
+          isOnline: false,
+          lastSeen: null,
+        );
+      }
+
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        messages: [...state.messages, tempMessage],
+        lastMessages: newLastMessages,
+        conversations: updatedConversations,
+      ));
+
+      if (currentUserId.isNotEmpty) {
+        await _localStorage.addMessage(
+            currentUserId, event.receiverId, tempMessage);
+        await _localStorage.saveConversations(
+            currentUserId, updatedConversations, newLastMessages);
+      }
+
+      try {
+        if (!_wsService.isConnected) throw Exception('not connected');
+        _wsService.sendMessage(
+          receiverId: event.receiverId,
+          messageType: event.messageType,
+          content: '',
+          fileUrl: fileUrl,
+          fileName: tempMessage.fileName,
+          fileSize: tempMessage.fileSize,
+          mediaType: tempMessage.mediaType,
+          encryption: 'none',
+        );
+      } catch (_) {
+        // Socket dropped after a successful upload: queue the server-hosted
+        // file message for delivery on reconnect.
+        if (currentUserId.isNotEmpty) {
+          await _localStorage.enqueueOutbox(currentUserId, tempMessage);
         }
       }
 
