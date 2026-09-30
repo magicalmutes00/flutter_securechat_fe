@@ -13,8 +13,6 @@ class NotificationService {
 
   final _notificationController =
       StreamController<NotificationPayload>.broadcast();
-  Stream<NotificationPayload> get notificationStream =>
-      _notificationController.stream;
 
   bool _isInitialized = false;
 
@@ -75,6 +73,11 @@ class NotificationService {
     }
   }
 
+  /// Opens the stream of notification TAP events. Displaying a notification
+  /// does not emit here — only the user tapping one does.
+  Stream<NotificationPayload> get notificationStream =>
+      _notificationController.stream;
+
   Future<void> showLocalNotification({
     required String title,
     required String body,
@@ -101,22 +104,18 @@ class NotificationService {
       iOS: iosDetails,
     );
 
-    final payload = data ?? (senderId != null ? {'sender_id': senderId} : null);
+    final payloadData =
+        data ?? (senderId != null ? {'sender_id': senderId} : null);
 
     await _localNotifications.show(
       DateTime.now().millisecondsSinceEpoch.remainder(100000),
       title,
       body,
       details,
-      payload: payload?.toString(),
+      // Must be valid JSON: the tap handler jsonDecodes it to route the user
+      // to the originating conversation.
+      payload: payloadData != null ? jsonEncode(payloadData) : null,
     );
-
-    _notificationController.add(NotificationPayload(
-      title: title,
-      body: body,
-      senderId: senderId,
-      data: data,
-    ));
   }
 
   Future<void> dispose() async {

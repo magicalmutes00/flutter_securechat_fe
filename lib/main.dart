@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
 import 'core/theme/app_theme.dart';
+import 'data/services/in_app_notification_service.dart';
 import 'data/services/local_storage_service.dart';
 import 'data/services/notification_service.dart';
 import 'data/services/rtc/incoming_call_router.dart';
@@ -32,6 +33,10 @@ void main() async {
 
   final notificationService = NotificationService();
   await notificationService.initialize();
+
+  // Incoming-message hub: decrypts once, re-broadcasts to the UI, and shows
+  // in-app banners (foreground) or system notifications (background).
+  InAppNotificationService.instance.init();
 
   runApp(SecureChatApp(notificationService: notificationService));
 }

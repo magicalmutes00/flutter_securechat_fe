@@ -23,11 +23,13 @@ class AtRestKey {
   );
 
   HiveAesCipher? _cipher;
+  List<int>? _keyBytes;
 
-  /// Resolves (and lazily creates) the AES-256 key, wrapped in the cipher Hive
-  /// boxes must be opened with.
-  Future<HiveAesCipher> getOrCreateCipher() async {
-    final existing = _cipher;
+  /// Resolves (and lazily creates) the raw AES-256 key bytes. Used to encrypt
+  /// cached media files (see [MediaCacheService]) with the same key that
+  /// protects the Hive boxes.
+  Future<List<int>> getOrCreateKeyBytes() async {
+    final existing = _keyBytes;
     if (existing != null) return existing;
 
     final storedKey = await _secureStorage.read(key: _keyStorageName);
@@ -42,6 +44,17 @@ class AtRestKey {
       );
     }
 
+    _keyBytes = keyBytes;
+    return keyBytes;
+  }
+
+  /// Resolves (and lazily creates) the AES-256 key, wrapped in the cipher Hive
+  /// boxes must be opened with.
+  Future<HiveAesCipher> getOrCreateCipher() async {
+    final existing = _cipher;
+    if (existing != null) return existing;
+
+    final keyBytes = await getOrCreateKeyBytes();
     final cipher = HiveAesCipher(keyBytes);
     _cipher = cipher;
     return cipher;

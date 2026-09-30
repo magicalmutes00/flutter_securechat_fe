@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:hive/hive.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 
 import '../../models/message_model.dart';
@@ -23,6 +24,18 @@ class EncryptedMedia {
   final String cipherPath;
   final String keyB64;
   final String nonceB64;
+}
+
+/// Thrown when a message cannot be encrypted. Callers must treat this as
+/// "message not sent" — silently falling back to plaintext would break the
+/// app's end-to-end encryption guarantee.
+class E2eeEncryptionException implements Exception {
+  const E2eeEncryptionException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
 }
 
 /// High-level E2EE facade used by the chat layer.
@@ -55,8 +68,11 @@ class E2eeService {
   }
 
   /// Encrypts [plaintext] for [receiverId] and returns the message fields to
-  /// send. Falls back to plaintext (encryption: 'none') when the recipient has
-  /// not yet published a key bundle, so messaging still works during rollout.
+  /// send.
+  ///
+  /// Throws [E2eeEncryptionException] when encryption is impossible (e.g. the
+  /// recipient has not published a key bundle yet) so callers can surface the
+  /// failure instead of silently sending plaintext.
   Future<Map<String, dynamic>> prepareOutgoingText({
     required String currentUserId,
     required String receiverId,
@@ -74,33 +90,37 @@ class E2eeService {
         'cipher_body': encrypted.body,
       };
     } catch (e) {
-      // No key bundle available for the recipient yet: send plaintext.
-      return {'encryption': 'none'};
+      throw E2eeEncryptionException(
+        'Message not sent: could not encrypt (recipient has no key bundle or '
+        'session establishment failed)',
+      );
     }
   }
 
   /// Encrypts [plaintext] for [groupId] using the sender-key chain. Returns the
-  /// group ciphertext fields to send, or null when no sender-key exists yet
-  /// (fallback to plaintext).
+  /// group ciphertext fields to send.
+  ///
+  /// Throws [E2eeEncryptionException] when no sender key can be established so
+  /// callers can surface the failure instead of silently sending plaintext.
   Future<Map<String, dynamic>> prepareOutgoingGroupText({
     required String currentUserId,
     required String groupId,
     required String plaintext,
   }) async {
-    try {
-      final manager = await forUser(currentUserId);
-      final encrypted =
-          await manager.encryptGroup(groupId, currentUserId, plaintext);
-      if (encrypted == null) return {'encryption': 'none'};
-      return {
-        'encryption': 'sgkey',
-        'distribution': encrypted.distributionB64,
-        'cipher_type': 0,
-        'cipher_body': encrypted.body,
-      };
-    } catch (e) {
-      return {'encryption': 'none'};
+    final manager = await forUser(currentUserId);
+    final encrypted =
+        await manager.encryptGroup(groupId, currentUserId, plaintext);
+    if (encrypted == null) {
+      throw const E2eeEncryptionException(
+        'Message not sent: group encryption failed',
+      );
     }
+    return {
+      'encryption': 'sgkey',
+      'distribution': encrypted.distributionB64,
+      'cipher_type': 0,
+      'cipher_body': encrypted.body,
+    };
   }
 
   /// Decrypts a group message from [senderId], applying the sender-key
@@ -137,9 +157,11 @@ class E2eeService {
   }
 
   /// Encrypts the media [envelope] (which contains the AES key/nonce) inside a
-  /// Signal message for [receiverId]. Returns the message crypto fields, or
-  /// null when no session can be established (fallback to plaintext media).
-  Future<Map<String, dynamic>?> encryptEnvelopeForPeer({
+  /// Signal message for [receiverId].
+  ///
+  /// Throws [E2eeEncryptionException] when no session can be established —
+  /// the attachment must never be uploaded with an unencrypted key envelope.
+  Future<Map<String, dynamic>> encryptEnvelopeForPeer({
     required String currentUserId,
     required String receiverId,
     required Map<String, dynamic> envelope,
@@ -156,7 +178,9 @@ class E2eeService {
         'cipher_body': encrypted.body,
       };
     } catch (e) {
-      return null;
+      throw const E2eeEncryptionException(
+        'Attachment not sent: could not encrypt the media key envelope',
+      );
     }
   }
 
@@ -234,6 +258,18 @@ class E2eeService {
       Uint8List.fromList(nonce),
       Uint8List.fromList(cipherBytes),
     );
+  }
+
+  /// Permanently deletes all E2EE state for [userId] — identity keys, signed
+  /// prekey, sessions and sender keys. Called on logout so a user's Signal
+  /// identity does not survive their account on the device.
+  Future<void> destroyUserState(String userId) async {
+    _managers.remove(userId);
+    try {
+      await Hive.deleteBoxFromDisk('securechat_e2ee_$userId');
+    } catch (_) {
+      // The box may not exist (user never initialized E2EE) — nothing to do.
+    }
   }
 
   /// Whether an encrypted session is established with [peerUserId].

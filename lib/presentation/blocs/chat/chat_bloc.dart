@@ -4,8 +4,8 @@ import '../../../core/constants/app_constants.dart';
 import '../../../data/models/message_model.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
+import '../../../data/services/in_app_notification_service.dart';
 import '../../../data/services/local_storage_service.dart';
-import '../../../data/services/notification_service.dart';
 import '../../../data/services/websocket_service.dart';
 import '../../../data/services/e2ee/e2ee_service.dart';
 import 'chat_event.dart';
@@ -14,15 +14,12 @@ import 'chat_state.dart';
 class ChatBloc extends Bloc<ChatEvent, ChatState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
-  final NotificationService _notificationService = NotificationService();
   final LocalStorageService _localStorage = LocalStorageService();
 
   StreamSubscription? _messageSubscription;
   StreamSubscription? _typingSubscription;
   StreamSubscription? _statusSubscription;
   Timer? _typingClearTimer;
-
-  String? _currentViewingUserId;
 
   ChatBloc() : super(const ChatState()) {
     on<ChatLoadMessages>(_onLoadMessages);
@@ -42,7 +39,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   }
 
   void _subscribeToWebSocket() {
-    _messageSubscription = _wsService.messageStream.listen((message) {
+    // Messages arrive pre-decrypted: InAppNotificationService decrypts each
+    // ciphertext exactly once before re-broadcasting (a Double-Ratchet
+    // message cannot be decrypted twice).
+    _messageSubscription = InAppNotificationService
+        .instance.decryptedMessageStream
+        .listen((message) {
       add(ChatReceiveMessage(message));
     });
     _typingSubscription = _wsService.typingStream.listen((data) {
@@ -114,10 +116,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         // Keep the message queued; a later reconnect will retry it.
       }
     }
-  }
-
-  void setCurrentViewingUser(String? userId) {
-    _currentViewingUserId = userId;
   }
 
   Future<void> _onLoadMessages(
@@ -221,6 +219,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       createdAt: DateTime.now(),
     );
 
+    final previousLastMessages = Map<String, Message>.from(state.lastMessages);
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[event.receiverId] = tempMessage;
 
@@ -290,8 +289,19 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           }
         }
       }
+    } on E2eeEncryptionException catch (e) {
+      // Encryption failed: nothing was sent. Roll back the optimistic bubble
+      // so the UI never shows a message that will never arrive, and surface
+      // the reason instead of silently downgrading to plaintext.
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        messages: state.messages.where((m) => m.id != tempMessage.id).toList(),
+        lastMessages: previousLastMessages,
+        errorMessage: e.message,
+      ));
     } catch (e) {
-      // Already updated UI optimistically
+      // Delivery failed after successful encryption (e.g. offline) — the REST
+      // fallback above already queued the message in the outbox.
     }
   }
 
@@ -311,6 +321,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       final uploadResult = await _apiClient.uploadFile(
         encryptedMedia.cipherPath,
         event.messageType,
+        // Keep the original file's name so the server's extension allow-list
+        // sees e.g. ".jpg" — the ciphertext content itself is opaque.
+        filename: event.filePath.split('/').last.split('\\').last,
       );
 
       if (uploadResult['success'] == true) {
@@ -326,7 +339,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           },
         );
 
-        final usesSignal = crypto?['encryption'] == 'signal';
         if (_wsService.isConnected) {
           _wsService.sendMessage(
             receiverId: event.receiverId,
@@ -336,9 +348,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
             fileName: uploadResult['file_name'],
             fileSize: uploadResult['file_size'],
             mediaType: uploadResult['media_type'],
-            encryption: usesSignal ? 'signal' : 'none',
-            cipherType: crypto?['cipher_type'] as int?,
-            cipherBody: crypto?['cipher_body'] as String?,
+            encryption: crypto['encryption'] as String? ?? 'none',
+            cipherType: crypto['cipher_type'] as int?,
+            cipherBody: crypto['cipher_body'] as String?,
           );
         }
       }
@@ -384,17 +396,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       _wsService.sendReadReceipt(message.senderId, currentUserId);
     }
 
-    if (!isViewingThisChat) {
-      _notificationService.showLocalNotification(
-        title: 'New message',
-        body: message.isTextMessage
-            ? message.content
-            : _getMessageTypeLabel(message.messageType),
-        senderId: message.senderId,
-        data: {'sender_id': message.senderId, 'message_id': message.id},
-      );
-    }
-
     if (state.currentChatUserId != null &&
         (message.senderId == state.currentChatUserId ||
             message.receiverId == state.currentChatUserId)) {
@@ -430,21 +431,6 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       _localStorage.addMessage(currentUserId, message.senderId, message);
       _localStorage.saveConversations(
           currentUserId, updatedConversations, newLastMessages);
-    }
-  }
-
-  String _getMessageTypeLabel(String messageType) {
-    switch (messageType) {
-      case AppConstants.messageTypeImage:
-        return '📷 Photo';
-      case AppConstants.messageTypeVideo:
-        return '🎥 Video';
-      case AppConstants.messageTypeAudio:
-        return '🎤 Voice message';
-      case AppConstants.messageTypeDocument:
-        return '📄 Document';
-      default:
-        return 'New message';
     }
   }
 

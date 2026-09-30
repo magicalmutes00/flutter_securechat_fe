@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>913365185172-k5krbb2hbjklqga29su8vup2pgngo5d0.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.913365185172-k5krbb2hbjklqga29su8vup2pgngo5d0</string>
+	<key>ANDROID_CLIENT_ID</key>
+	<string>913365185172-8n4rrgv78tlmp2ajkkskfkueqlg3qj9i.apps.googleusercontent.com</string>
+	<key>API_KEY</key>
+	<string>AIzaSyBcOB3XIdR6LzkZAqghV-5Yq2M99EqIJU4</string>
+	<key>GCM_SENDER_ID</key>
+	<string>913365185172</string>
+	<key>PLIST_VERSION</key>
+	<string>1</string>
+	<key>BUNDLE_ID</key>
+	<string>com.trisentricai.securechat</string>
+	<key>PROJECT_ID</key>
+	<string>chat-e2e86</string>
+	<key>STORAGE_BUCKET</key>
+	<string>chat-e2e86.firebasestorage.app</string>
+	<key>IS_ADS_ENABLED</key>
+	<false></false>
+	<key>IS_ANALYTICS_ENABLED</key>
+	<false></false>
+	<key>IS_APPINVITE_ENABLED</key>
+	<true></true>
+	<key>IS_GCM_ENABLED</key>
+	<true></true>
+	<key>IS_SIGNIN_ENABLED</key>
+	<true></true>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:913365185172:ios:c59f836c9eb6eeb99eba81</string>
+</dict>
+</plist>

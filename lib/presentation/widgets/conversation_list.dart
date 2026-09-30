@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/user_model.dart';
+import '../widgets/auth_image.dart';
 
 class ConversationList extends StatelessWidget {
   final Map<String, User> conversations;
@@ -51,15 +52,12 @@ class _ConversationTile extends StatelessWidget {
             backgroundColor: Colors.white,
             child: user.avatarUrl != null
                 ? ClipOval(
-                    child: Image.network(
-                      user.avatarUrl!,
+                    child: AuthImage(
+                      path: user.avatarUrl!,
                       width: 56,
                       height: 56,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Icon(
-                        Icons.person,
-                        color: AppTheme.primaryColor,
-                      ),
+                      errorIcon: Icons.person,
                     ),
                   )
                 : const Icon(

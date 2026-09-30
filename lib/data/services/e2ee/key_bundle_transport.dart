@@ -95,7 +95,7 @@ class ApiKeyBundleTransport implements KeyBundleTransport {
     if (data == null) return null;
     return RemoteKeyBundle(
       registrationId: data['registration_id'] as int? ?? 0,
-      deviceId: data['device_id'] as int? ?? 1,
+      deviceId: _parseDeviceId(data['device_id']),
       identityKeyPublic: data['identity_key_public'] as String,
       signedPrekeyId: data['signed_prekey_id'] as int,
       signedPrekeyPublic: data['signed_prekey_public'] as String,
@@ -103,6 +103,14 @@ class ApiKeyBundleTransport implements KeyBundleTransport {
       oneTimePrekeyId: data['one_time_prekey_id'] as int?,
       oneTimePrekeyPublic: data['one_time_prekey_public'] as String?,
     );
+  }
+
+  /// The server stores the client-generated device UUID as a string, while
+  /// libsignal expects an int device id. Sessions on this client always
+  /// target device id 1, so any value that is not a plain int resolves to 1.
+  static int _parseDeviceId(Object? raw) {
+    if (raw is int) return raw;
+    return int.tryParse('$raw') ?? 1;
   }
 
   @override

@@ -9,7 +9,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.secure_chat"
+    namespace = "com.trisentricai.securechat"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -24,8 +24,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.secure_chat"
+        // Must match package_name in google-services.json — the
+        // processDebugGoogleServices task fails the build otherwise.
+        applicationId = "com.trisentricai.securechat"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion

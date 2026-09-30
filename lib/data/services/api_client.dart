@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../core/constants/app_constants.dart';
@@ -242,8 +244,9 @@ class ApiClient {
   }
 
   Future<List<dynamic>> searchUsers(String query) async {
+    // The user search endpoint requires authentication.
     final response = await _dio.get(
-      '/api/auth/public/users/search',
+      '/api/auth/users/search',
       queryParameters: {'q': query},
     );
     return response.data['users'] as List<dynamic>;
@@ -340,7 +343,10 @@ class ApiClient {
   Future<void> registerPushToken(String token) async {
     await _dio.post(
       '/api/push/register-token',
-      data: {'token': token, 'platform': 'android'},
+      data: {
+        'token': token,
+        'platform': Platform.isIOS ? 'ios' : 'android',
+      },
     );
   }
 
@@ -378,9 +384,13 @@ class ApiClient {
   }
 
   // File Upload Methods
-  Future<Map<String, dynamic>> uploadFile(String filePath, String type) async {
+  Future<Map<String, dynamic>> uploadFile(
+    String filePath,
+    String type, {
+    String? filename,
+  }) async {
     final formData = FormData.fromMap({
-      'file': await MultipartFile.fromFile(filePath),
+      'file': await MultipartFile.fromFile(filePath, filename: filename),
     });
     final response = await _dio.post(
       '/api/files/upload/$type',
@@ -448,6 +458,13 @@ class ApiClient {
       '/api/keys/has-bundle',
       queryParameters: {'device_id': deviceId},
     );
+    return response.data as Map<String, dynamic>;
+  }
+
+  // Real-time communication (WebRTC) methods
+  /// Fetches the STUN/TURN (iceServers) configuration served by the backend.
+  Future<Map<String, dynamic>> getRtcConfig() async {
+    final response = await _dio.get('/api/rtc/config');
     return response.data as Map<String, dynamic>;
   }
 

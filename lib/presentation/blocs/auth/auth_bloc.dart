@@ -3,8 +3,11 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
+import '../../../data/services/e2ee/e2ee_service.dart';
+import '../../../data/services/media_cache_service.dart';
 import '../../../data/services/firebase_auth_service.dart';
 import '../../../data/services/local_storage_service.dart';
+import '../../../data/services/push_notification_service.dart';
 import '../../../data/services/websocket_service.dart';
 import 'auth_event.dart';
 import 'auth_state.dart';
@@ -13,8 +16,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
   final LocalStorageService _localStorage = LocalStorageService();
-  final FirebaseAuthService _firebaseAuthService =
-      FirebaseAuthService.instance;
+  final FirebaseAuthService _firebaseAuthService = FirebaseAuthService.instance;
 
   AuthBloc() : super(const AuthState()) {
     on<AuthCheckRequested>(_onAuthCheckRequested);
@@ -343,7 +345,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
   /// Exchanges a Firebase ID token for a SecureChat session and connects the
   /// WebSocket. Shared by OTP entry, instant verification, and Google sign-in.
-  Future<void> _completeFirebaseAuth(String idToken, Emitter<AuthState> emit) async {
+  Future<void> _completeFirebaseAuth(
+      String idToken, Emitter<AuthState> emit) async {
     debugPrint('[AuthBloc] exchanging Firebase token with backend...');
     final result = await _firebaseAuthService.exchangeToken(idToken);
     debugPrint('[AuthBloc] backend exchange response: $result');
@@ -410,10 +413,20 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     final currentUserId = state.user?.id;
     await _firebaseAuthService.signOut();
     await _wsService.disconnect();
+    if (currentUserId != null) {
+      // Release the FCM token so this device stops receiving pushes for the
+      // account before the session is torn down.
+      await PushNotificationHandler().unregister();
+    }
     await _apiClient.clearTokens();
     if (currentUserId != null) {
       await _localStorage.clearUserData(currentUserId);
+      // Signal identity keys and sessions must not survive the account on
+      // this device.
+      await E2eeService.instance.destroyUserState(currentUserId);
     }
+    // Cached media (decrypted images, avatars) must not survive logout either.
+    await MediaCacheService().clear();
     emit(const AuthState(status: AuthStatus.unauthenticated));
   }
 

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../core/constants/app_constants.dart';
@@ -33,6 +34,13 @@ class WebSocketService {
   bool _isConnected = false;
   bool get isConnected => _isConnected;
 
+  // Set when disconnect() is called on purpose (logout, screen teardown) so
+  // the reconnect loop does not fight the caller.
+  bool _intentionalDisconnect = false;
+  bool _reconnecting = false;
+
+  final Random _random = Random();
+
   Timer? _pingTimer;
   String? _currentUserId;
 
@@ -40,6 +48,7 @@ class WebSocketService {
 
   Future<void> connect() async {
     if (_isConnected) return;
+    _intentionalDisconnect = false;
 
     try {
       final token = await _storage.read(key: AppConstants.accessTokenKey);
@@ -133,24 +142,38 @@ class WebSocketService {
   }
 
   Future<void> _reconnect() async {
-    if (_currentUserId == null) return;
+    if (_currentUserId == null || _reconnecting || _intentionalDisconnect) {
+      return;
+    }
+    _reconnecting = true;
 
-    const maxAttempts = 5;
-    var attempts = 0;
-    var delay = const Duration(seconds: 1);
+    try {
+      const maxAttempts = 10;
+      const maxDelay = Duration(seconds: 30);
+      var attempts = 0;
+      var delay = const Duration(seconds: 1);
 
-    while (attempts < maxAttempts && !_isConnected) {
-      await Future.delayed(delay);
-      try {
-        await connect();
-        break;
-      } catch (_) {
-        attempts++;
-        delay = Duration(seconds: delay.inSeconds * 2);
-        if (attempts >= maxAttempts) {
-          _connectionController.add(false);
+      while (
+          attempts < maxAttempts && !_isConnected && !_intentionalDisconnect) {
+        // Jitter ±50% so many clients don't reconnect in lockstep after a
+        // server restart.
+        final jitterMs =
+            (delay.inMilliseconds * (0.5 + _random.nextDouble())).round();
+        await Future.delayed(Duration(milliseconds: jitterMs));
+        try {
+          await connect();
+          return;
+        } catch (_) {
+          attempts++;
+          final doubled = delay * 2;
+          delay = doubled > maxDelay ? maxDelay : doubled;
         }
       }
+      if (!_isConnected && !_intentionalDisconnect) {
+        _connectionController.add(false);
+      }
+    } finally {
+      _reconnecting = false;
     }
   }
 
@@ -159,6 +182,13 @@ class WebSocketService {
     _connectionController.add(false);
     _pingTimer?.cancel();
     _pingTimer = null;
+
+    // A clean server-side close (restart, idle timeout, network drop) needs
+    // the same treatment as an error — otherwise the app stays disconnected
+    // until the user takes a manual action.
+    if (!_intentionalDisconnect) {
+      _reconnect();
+    }
   }
 
   void _startPingTimer() {
@@ -350,6 +380,7 @@ class WebSocketService {
   String? get currentUserId => _currentUserId;
 
   Future<void> disconnect() async {
+    _intentionalDisconnect = true;
     _pingTimer?.cancel();
     await _channel?.sink.close();
     _channel = null;

@@ -25,6 +25,7 @@ import 'new_group_screen.dart';
 import 'profile_page.dart';
 import 'settings_page.dart';
 import 'story_viewer_screen.dart';
+import '../widgets/auth_image.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -471,15 +472,12 @@ class _ConversationTile extends StatelessWidget {
         backgroundColor: Colors.white,
         child: user.avatarUrl != null
             ? ClipOval(
-                child: Image.network(
-                  user.avatarUrl!,
+                child: AuthImage(
+                  path: user.avatarUrl!,
                   width: 56,
                   height: 56,
                   fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Icon(
-                    Icons.person,
-                    color: AppTheme.primaryColor,
-                  ),
+                  errorIcon: Icons.person,
                 ),
               )
             : const Icon(

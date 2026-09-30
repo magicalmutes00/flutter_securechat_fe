@@ -2,10 +2,10 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
-import '../../core/constants/app_constants.dart';
 import '../../data/models/status_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
+import '../widgets/auth_image.dart';
 
 /// Full-screen status viewer with per-story progress bars and auto-advance.
 /// Tap the left/right half to go back/forward; long-press to pause.
@@ -207,20 +207,18 @@ class _StoryViewerScreenState extends State<StoryViewerScreen> {
 
   Widget _buildStoryContent(Status status) {
     if (status.isImage) {
-      return Image.network(
-        '${AppConstants.baseUrl}${status.mediaPath}',
+      // AuthImage downloads through the authenticated API client (the file
+      // route requires a JWT and redirects to a signed Cloudinary URL) and
+      // caches the bytes for instant re-viewing.
+      return AuthImage(
+        path: status.mediaPath!,
         fit: BoxFit.contain,
         width: double.infinity,
         height: double.infinity,
-        loadingBuilder: (context, child, progress) {
-          if (progress == null) return child;
-          return const Center(
-            child: CircularProgressIndicator(color: Colors.white),
-          );
-        },
-        errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image, color: Colors.white54, size: 64),
+        placeholder: const Center(
+          child: CircularProgressIndicator(color: Colors.white),
         ),
+        errorIcon: Icons.broken_image,
       );
     }
     return Center(

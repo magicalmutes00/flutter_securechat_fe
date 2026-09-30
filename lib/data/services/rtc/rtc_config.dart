@@ -1,18 +1,17 @@
-import 'dart:convert';
+import 'package:flutter/foundation.dart';
 
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import '../api_client.dart';
 
 /// Resolves the WebRTC STUN/TURN (coturn) configuration.
 ///
-/// STUN servers are public defaults; the TURN server (coturn) credentials are
-/// fetched from the backend so secrets never ship in the app binary.
+/// The full iceServers list is fetched from the backend (`GET /api/rtc/config`)
+/// so STUN/TURN endpoints and credentials are configured server-side and never
+/// ship in the app binary. Until the fetch succeeds, public STUN defaults are
+/// used so calls still work on open networks.
 class RtcConfig {
   RtcConfig._();
 
   static final RtcConfig instance = RtcConfig._();
-
-  static const _turnConfigKey = 'securechat_turn_config';
-  final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
   List<Map<String, dynamic>> _iceServers = [
     {'urls': 'stun:stun.l.google.com:19302'},
@@ -21,36 +20,23 @@ class RtcConfig {
 
   List<Map<String, dynamic>> get iceServers => List.unmodifiable(_iceServers);
 
-  Future<void> loadFromServer() async {
-    try {
-      final cached = await _secureStorage.read(key: _turnConfigKey);
-      if (cached != null && cached.isNotEmpty) {
-        _apply(jsonDecode(cached) as Map<String, dynamic>);
-        return;
-      }
-      // The backend exposes TURN credentials over the authenticated keys
-      // endpoint pattern; if unavailable we simply keep the STUN defaults and
-      // calls still work on open networks.
-    } catch (_) {
-      // Keep STUN defaults on failure.
-    }
+  @visibleForTesting
+  set iceServersForTesting(List<Map<String, dynamic>> servers) {
+    _iceServers = servers;
   }
 
-  void _apply(Map<String, dynamic> config) {
-    final stun = config['stun_servers'] as List<dynamic>? ?? [];
-    if (stun.isNotEmpty) {
-      _iceServers = stun.map((e) => {'urls': e as String}).toList();
-    }
+  Future<void> loadFromServer() async {
+    try {
+      final data = await ApiClient().getRtcConfig();
+      final servers = data['ice_servers'] as List<dynamic>?;
+      if (servers == null || servers.isEmpty) return;
 
-    final turnUrl = config['turn_server_url'] as String?;
-    final username = config['turn_username'] as String?;
-    final credential = config['turn_credential'] as String?;
-    if (turnUrl != null && username != null && credential != null) {
-      _iceServers.add({
-        'urls': turnUrl,
-        'username': username,
-        'credential': credential,
-      });
+      _iceServers = servers
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+    } catch (_) {
+      // Keep STUN defaults on failure — calls still work on open networks.
     }
   }
 }

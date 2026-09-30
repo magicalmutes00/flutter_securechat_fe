@@ -9,6 +9,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
+import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/rtc/call_manager.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
@@ -16,6 +17,7 @@ import '../blocs/chat/chat_state.dart';
 import '../widgets/message_bubble.dart';
 import '../widgets/security_code_sheet.dart';
 import 'call_screen.dart';
+import '../widgets/auth_image.dart';
 
 class ChatScreen extends StatefulWidget {
   final User user;
@@ -64,8 +66,8 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    InAppNotificationService.instance.setViewingChat(widget.user.id);
     context.read<ChatBloc>().add(ChatLoadMessages(userId: widget.user.id));
-    context.read<ChatBloc>().setCurrentViewingUser(widget.user.id);
     _blocSubscription = context.read<ChatBloc>().stream.listen((state) {
       if (state.messages.isNotEmpty && _scrollController.hasClients) {
         _scrollController.animateTo(
@@ -79,10 +81,10 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    InAppNotificationService.instance.setViewingChat(null);
     _messageController.dispose();
     _scrollController.dispose();
     _blocSubscription?.cancel();
-    context.read<ChatBloc>().setCurrentViewingUser(null);
     super.dispose();
   }
 
@@ -216,15 +218,12 @@ class _ChatScreenState extends State<ChatScreen> {
               backgroundColor: Colors.white,
               child: widget.user.avatarUrl != null
                   ? ClipOval(
-                      child: Image.network(
-                        widget.user.avatarUrl!,
+                      child: AuthImage(
+                        path: widget.user.avatarUrl!,
                         width: 36,
                         height: 36,
                         fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => const Icon(
-                          Icons.person,
-                          color: AppTheme.primaryColor,
-                        ),
+                        errorIcon: Icons.person,
                       ),
                     )
                   : const Icon(
@@ -314,168 +313,176 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: BlocBuilder<ChatBloc, ChatState>(
-              builder: (context, state) {
-                if (state.status == ChatStatus.loading &&
-                    state.messages.isEmpty) {
-                  return const Center(child: CircularProgressIndicator());
-                }
+      body: BlocListener<ChatBloc, ChatState>(
+        listenWhen: (prev, curr) =>
+            curr.errorMessage != null && prev.errorMessage != curr.errorMessage,
+        listener: (context, state) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(state.errorMessage!)),
+          );
+        },
+        child: Column(
+          children: [
+            Expanded(
+              child: BlocBuilder<ChatBloc, ChatState>(
+                builder: (context, state) {
+                  if (state.status == ChatStatus.loading &&
+                      state.messages.isEmpty) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
 
-                if (state.status == ChatStatus.error) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.error_outline,
-                          size: 80,
-                          color: Colors.red[400],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'Failed to load messages',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
+                  if (state.status == ChatStatus.error) {
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 80,
+                            color: Colors.red[400],
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        TextButton(
-                          onPressed: () {
-                            context
-                                .read<ChatBloc>()
-                                .add(ChatLoadMessages(userId: widget.user.id));
-                          },
-                          child: const Text('Retry'),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                if (state.messages.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.chat_bubble_outline,
-                          size: 80,
-                          color: Colors.grey[400],
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          'No messages yet',
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: Colors.grey[600],
+                          const SizedBox(height: 16),
+                          Text(
+                            'Failed to load messages',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.grey[600],
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'Start a conversation!',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.grey[500],
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () {
+                              context.read<ChatBloc>().add(
+                                  ChatLoadMessages(userId: widget.user.id));
+                            },
+                            child: const Text('Retry'),
                           ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  controller: _scrollController,
-                  reverse: true,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  itemCount: state.messages.length,
-                  itemBuilder: (context, index) {
-                    // With reverse:true, index 0 is at the BOTTOM (newest)
-                    // So we reverse to show oldest at top
-                    final message =
-                        state.messages[state.messages.length - 1 - index];
-                    return MessageBubble(
-                      message: message,
-                      isMe: message.senderId == widget.user.id,
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 10,
-                  offset: const Offset(0, -2),
-                ),
-              ],
-            ),
-            child: SafeArea(
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.attach_file,
-                        color: AppTheme.primaryColor),
-                    onPressed: _showAttachmentOptions,
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      decoration: InputDecoration(
-                        hintText: 'Type a message...',
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide.none,
-                        ),
-                        filled: true,
-                        fillColor: Colors.grey[100],
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 10,
-                        ),
+                        ],
                       ),
-                      maxLines: null,
-                      textCapitalization: TextCapitalization.sentences,
-                      onChanged: (value) {
-                        if (value.isNotEmpty && !_isTyping) {
-                          _isTyping = true;
-                          context.read<ChatBloc>().add(ChatSendTypingStatus(
-                                receiverId: widget.user.id,
-                                isTyping: true,
-                              ));
-                        } else if (value.isEmpty && _isTyping) {
-                          _isTyping = false;
-                          context.read<ChatBloc>().add(ChatSendTypingStatus(
-                                receiverId: widget.user.id,
-                                isTyping: false,
-                              ));
-                        }
-                      },
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  CircleAvatar(
-                    backgroundColor: AppTheme.primaryColor,
-                    child: IconButton(
-                      icon:
-                          const Icon(Icons.send, color: Colors.white, size: 20),
-                      onPressed: _sendMessage,
-                    ),
+                    );
+                  }
+
+                  if (state.messages.isEmpty) {
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(
+                            Icons.chat_bubble_outline,
+                            size: 80,
+                            color: Colors.grey[400],
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'No messages yet',
+                            style: TextStyle(
+                              fontSize: 16,
+                              color: Colors.grey[600],
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Start a conversation!',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[500],
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  return ListView.builder(
+                    controller: _scrollController,
+                    reverse: true,
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    itemCount: state.messages.length,
+                    itemBuilder: (context, index) {
+                      // With reverse:true, index 0 is at the BOTTOM (newest)
+                      // So we reverse to show oldest at top
+                      final message =
+                          state.messages[state.messages.length - 1 - index];
+                      return MessageBubble(
+                        message: message,
+                        isMe: message.senderId == widget.user.id,
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.05),
+                    blurRadius: 10,
+                    offset: const Offset(0, -2),
                   ),
                 ],
               ),
+              child: SafeArea(
+                child: Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.attach_file,
+                          color: AppTheme.primaryColor),
+                      onPressed: _showAttachmentOptions,
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        decoration: InputDecoration(
+                          hintText: 'Type a message...',
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(24),
+                            borderSide: BorderSide.none,
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey[100],
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 10,
+                          ),
+                        ),
+                        maxLines: null,
+                        textCapitalization: TextCapitalization.sentences,
+                        onChanged: (value) {
+                          if (value.isNotEmpty && !_isTyping) {
+                            _isTyping = true;
+                            context.read<ChatBloc>().add(ChatSendTypingStatus(
+                                  receiverId: widget.user.id,
+                                  isTyping: true,
+                                ));
+                          } else if (value.isEmpty && _isTyping) {
+                            _isTyping = false;
+                            context.read<ChatBloc>().add(ChatSendTypingStatus(
+                                  receiverId: widget.user.id,
+                                  isTyping: false,
+                                ));
+                          }
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    CircleAvatar(
+                      backgroundColor: AppTheme.primaryColor,
+                      child: IconButton(
+                        icon: const Icon(Icons.send,
+                            color: Colors.white, size: 20),
+                        onPressed: _sendMessage,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -625,9 +632,6 @@ class _MessageSearchSheetState extends State<_MessageSearchSheet> {
                                   '${_formatTime(message.createdAt)}',
                                 ),
                                 onTap: () {
-                                  final chatBloc = context.read<ChatBloc>();
-                                  chatBloc
-                                      .setCurrentViewingUser(widget.peerUserId);
                                   Navigator.pop(context);
                                 },
                               );

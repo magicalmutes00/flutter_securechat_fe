@@ -5,6 +5,7 @@ import '../../core/theme/app_theme.dart';
 import '../../data/services/contacts_sync_service.dart';
 import '../blocs/auth/auth_bloc.dart';
 import '../blocs/auth/auth_state.dart';
+import '../widgets/auth_image.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -58,15 +59,12 @@ class _SettingsPageState extends State<SettingsPage> {
                     backgroundColor: AppTheme.primaryColor,
                     child: user.avatarUrl != null
                         ? ClipOval(
-                            child: Image.network(
-                              user.avatarUrl!,
+                            child: AuthImage(
+                              path: user.avatarUrl!,
                               width: 40,
                               height: 40,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Icon(
-                                Icons.person,
-                                color: Colors.white,
-                              ),
+                              errorIcon: Icons.person,
                             ),
                           )
                         : const Icon(Icons.person, color: Colors.white),

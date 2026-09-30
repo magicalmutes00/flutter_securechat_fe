@@ -8,6 +8,7 @@ import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
 import '../../data/services/e2ee/e2ee_service.dart';
+import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/websocket_service.dart';
 import '../widgets/message_bubble.dart';
 
@@ -44,6 +45,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   @override
   void initState() {
     super.initState();
+    InAppNotificationService.instance.setViewingChat(widget.group.id);
     _members = List.from(widget.members);
     _loadMessages();
     _subscribe();
@@ -86,7 +88,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _subscribe() {
-    _messageSub = _wsService.groupMessageStream.listen((message) {
+    // Live messages arrive already decrypted by InAppNotificationService
+    // (each sender-key ciphertext must be decrypted exactly once).
+    _messageSub = InAppNotificationService.instance.decryptedGroupMessageStream
+        .listen((message) {
       if (message.groupId != widget.group.id) return;
       unawaited(_onIncoming(message));
     });
@@ -106,12 +111,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   Future<void> _onIncoming(Message message) async {
-    final decrypted = await _decryptGroupMessage(message);
     if (!mounted) return;
     if (message.senderId == _currentUserId) return;
     setState(() {
-      if (!_messages.any((m) => m.id == decrypted.id)) {
-        _messages.add(decrypted);
+      if (!_messages.any((m) => m.id == message.id)) {
+        _messages.add(message);
       }
       _scrollToBottom();
     });
@@ -175,11 +179,23 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     );
     setState(() => _messages.add(tempMessage));
 
-    final crypto = await E2eeService.instance.prepareOutgoingGroupText(
-      currentUserId: _currentUserId!,
-      groupId: widget.group.id,
-      plaintext: content,
-    );
+    Map<String, dynamic> crypto;
+    try {
+      crypto = await E2eeService.instance.prepareOutgoingGroupText(
+        currentUserId: _currentUserId!,
+        groupId: widget.group.id,
+        plaintext: content,
+      );
+    } on E2eeEncryptionException catch (e) {
+      // Encryption failed: nothing was sent. Remove the optimistic bubble
+      // and explain why instead of silently sending plaintext.
+      if (!mounted) return;
+      setState(() => _messages.remove(tempMessage));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message)),
+      );
+      return;
+    }
     final usesSignal = crypto['encryption'] == 'sgkey';
 
     _wsService.sendGroupMessage(
@@ -205,6 +221,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
 
   @override
   void dispose() {
+    InAppNotificationService.instance.setViewingChat(null);
     _messageSub?.cancel();
     _typingSub?.cancel();
     _typingClearTimer?.cancel();

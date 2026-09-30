@@ -1,4 +1,4 @@
-package com.example.secure_chat
+package com.trisentricai.securechat
 
 import io.flutter.embedding.android.FlutterActivity
 
