@@ -20,6 +20,8 @@ class WebSocketService {
       StreamController<Map<String, dynamic>>.broadcast();
   final _statusController = StreamController<Map<String, dynamic>>.broadcast();
   final _callController = StreamController<Map<String, dynamic>>.broadcast();
+  final _resetSessionController =
+      StreamController<Map<String, dynamic>>.broadcast();
   final _connectionController = StreamController<bool>.broadcast();
 
   Stream<Message> get messageStream => _messageController.stream;
@@ -29,6 +31,11 @@ class WebSocketService {
       _groupTypingController.stream;
   Stream<Map<String, dynamic>> get statusStream => _statusController.stream;
   Stream<Map<String, dynamic>> get callSignalStream => _callController.stream;
+
+  /// Peers asking us to drop our session with them (their side cannot
+  /// decrypt our messages). Entries carry `sender_id` (the requesting peer).
+  Stream<Map<String, dynamic>> get resetSessionStream =>
+      _resetSessionController.stream;
   Stream<bool> get connectionStream => _connectionController.stream;
 
   bool _isConnected = false;
@@ -112,6 +119,9 @@ class WebSocketService {
         case 'delivery_receipt':
         case 'read_receipt':
           _statusController.add(message);
+          break;
+        case 'reset_session':
+          _resetSessionController.add(message);
           break;
         case 'call_ring':
         case 'call_offer':
@@ -249,6 +259,21 @@ class WebSocketService {
       'sender_id': _currentUserId,
       'receiver_id': receiverId,
       'is_typing': isTyping,
+    };
+
+    _channel!.sink.add(jsonEncode(message));
+  }
+
+  /// Asks [peerId] to drop their session with us (our side cannot decrypt
+  /// their messages). Silent no-op when offline — the next decrypt failure
+  /// will ask again.
+  void sendResetSession(String peerId) {
+    if (_channel == null || !_isConnected) return;
+
+    final message = {
+      'type': 'reset_session',
+      'sender_id': _currentUserId,
+      'receiver_id': peerId,
     };
 
     _channel!.sink.add(jsonEncode(message));
@@ -400,6 +425,7 @@ class WebSocketService {
     _groupTypingController.close();
     _statusController.close();
     _callController.close();
+    _resetSessionController.close();
     _connectionController.close();
   }
 }

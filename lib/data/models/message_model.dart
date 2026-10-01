@@ -1,6 +1,11 @@
 import 'package:equatable/equatable.dart';
 
 class Message extends Equatable {
+  /// Bubble copy rendered when a received ciphertext cannot be decrypted.
+  /// Single source of truth: the decrypt path writes it, the receive path
+  /// reads it back to detect live decryption failures.
+  static const String decryptionFailedContent = '🔒 Unable to decrypt message';
+
   final String id;
   final String senderId;
   final String receiverId;

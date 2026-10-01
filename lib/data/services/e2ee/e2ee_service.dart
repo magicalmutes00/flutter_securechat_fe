@@ -170,28 +170,38 @@ class E2eeService {
         };
     try {
       final manager = await forUser(currentUserId);
-      if (!await manager.hasSession(receiverId)) {
-        await manager.establishSession(receiverId);
-      }
-      try {
-        return pack(await manager.encrypt(receiverId, plaintext));
-      } catch (e) {
-        // The session may be stale, or the peer's identity may have rotated
-        // (reinstall): drop the session, adopt their currently published
-        // identity when it changed, rebuild once via X3DH, retry. A missing
-        // bundle is NOT retried — re-fetching a 404 helps no one and each
-        // fetch burns one of the peer's one-time prekeys.
-        await manager.resetSession(receiverId);
-        await _adoptLatestIdentity(manager, receiverId);
-        await manager.establishSession(receiverId);
-        return pack(await manager.encrypt(receiverId, plaintext));
-      }
+      return pack(
+          await _encryptWithRecovery(manager, receiverId, plaintext));
     } on E2eeEncryptionException {
       rethrow;
     } catch (e) {
       throw E2eeEncryptionException(
         'Message not sent: could not encrypt (${_shortCause(e)})',
       );
+    }
+  }
+
+  /// Signal-encrypts [plaintext] for [receiverId], recovering once from
+  /// stale session state: drops the session, adopts the peer's currently
+  /// published identity when it changed (reinstall), rebuilds via X3DH,
+  /// retries. A missing bundle is NOT retried — re-fetching a 404 helps no
+  /// one and each fetch burns one of the peer's one-time prekeys. Shared by
+  /// the text and media-envelope paths so both heal identically.
+  Future<EncryptedMessage> _encryptWithRecovery(
+    E2eeManager manager,
+    String receiverId,
+    String plaintext,
+  ) async {
+    if (!await manager.hasSession(receiverId)) {
+      await manager.establishSession(receiverId);
+    }
+    try {
+      return await manager.encrypt(receiverId, plaintext);
+    } catch (_) {
+      await manager.resetSession(receiverId);
+      await _adoptLatestIdentity(manager, receiverId);
+      await manager.establishSession(receiverId);
+      return await manager.encrypt(receiverId, plaintext);
     }
   }
 
@@ -264,10 +274,13 @@ class E2eeService {
   }
 
   /// Encrypts the media [envelope] (which contains the AES key/nonce) inside a
-  /// Signal message for [receiverId].
+  /// Signal message for [receiverId]. Shares the text path's recovery, so a
+  /// peer reinstall heals here identically instead of failing the whole
+  /// attachment after a successful upload.
   ///
   /// Throws [E2eeEncryptionException] when no session can be established —
   /// the attachment must never be uploaded with an unencrypted key envelope.
+  /// The message names the underlying cause.
   Future<Map<String, dynamic>> encryptEnvelopeForPeer({
     required String currentUserId,
     required String receiverId,
@@ -275,18 +288,19 @@ class E2eeService {
   }) async {
     try {
       final manager = await forUser(currentUserId);
-      if (!await manager.hasSession(receiverId)) {
-        await manager.establishSession(receiverId);
-      }
-      final encrypted = await manager.encrypt(receiverId, jsonEncode(envelope));
+      final encrypted = await _encryptWithRecovery(
+          manager, receiverId, jsonEncode(envelope));
       return {
         'encryption': 'signal',
         'cipher_type': encrypted.type,
         'cipher_body': encrypted.body,
       };
+    } on E2eeEncryptionException {
+      rethrow;
     } catch (e) {
-      throw const E2eeEncryptionException(
-        'Attachment not sent: could not encrypt the media key envelope',
+      throw E2eeEncryptionException(
+        'Attachment not sent: could not encrypt the media key envelope '
+        '(${_shortCause(e)})',
       );
     }
   }
@@ -361,7 +375,7 @@ class E2eeService {
         }
       }
       return message.copyWith(
-        content: '🔒 Unable to decrypt message',
+        content: Message.decryptionFailedContent,
         encryption: 'none',
       );
     }
@@ -459,7 +473,7 @@ class E2eeService {
         'from=${message.senderId} error=${e.runtimeType}',
       );
       return message.copyWith(
-        content: '🔒 Unable to decrypt message',
+        content: Message.decryptionFailedContent,
         encryption: 'none',
       );
     }
@@ -501,6 +515,17 @@ class E2eeService {
     final manager = _managers[currentUserId];
     if (manager == null) return false;
     return manager.hasSession(peerUserId);
+  }
+
+  /// Drops the session with [peerUserId] (used when the peer reports they
+  /// cannot decrypt our messages). Our next send re-establishes fresh via
+  /// X3DH against their current bundle. Never throws.
+  Future<void> resetSessionFor(String currentUserId, String peerUserId) async {
+    try {
+      await (await forUser(currentUserId)).resetSession(peerUserId);
+    } catch (_) {
+      // No manager/store yet, or nothing to drop — nothing to do.
+    }
   }
 
   /// Base64 public identity key for the user, used to display security codes.

@@ -17,6 +17,18 @@ import 'notification_service.dart';
 import 'rtc/incoming_call_router.dart';
 import 'websocket_service.dart';
 
+/// Whether a session-reset request may go out now, given the last one went
+/// out at [lastRequest] (null when never). Pure so the throttle policy is
+/// unit-testable.
+bool shouldRequestSessionReset(
+  DateTime? lastRequest,
+  DateTime now, {
+  Duration minInterval = const Duration(minutes: 5),
+}) {
+  if (lastRequest == null) return true;
+  return now.difference(lastRequest) >= minInterval;
+}
+
 /// Central incoming-message notification hub.
 ///
 /// Sits between the raw WebSocket streams and the UI:
@@ -40,6 +52,12 @@ class InAppNotificationService with WidgetsBindingObserver {
   StreamSubscription<Message>? _messageSub;
   StreamSubscription<Message>? _groupMessageSub;
   StreamSubscription<NotificationPayload>? _notificationTapSub;
+  StreamSubscription<Map<String, dynamic>>? _resetSessionSub;
+
+  /// Last session-reset request per peer: throttles the control frames so a
+  /// flood of broken messages (or a malicious peer) can't turn recovery
+  /// into a storm.
+  final Map<String, DateTime> _lastResetRequest = {};
 
   final _decryptedMessageController = StreamController<Message>.broadcast();
   final _decryptedGroupMessageController =
@@ -80,6 +98,15 @@ class InAppNotificationService with WidgetsBindingObserver {
       (message) => unawaited(_handleIncoming(message, isGroup: true)),
     );
 
+    // Peers asking us to drop our session with them (their side cannot
+    // decrypt our messages). Our next send re-establishes fresh.
+    _resetSessionSub = _ws.resetSessionStream.listen((data) {
+      final peerId = data['sender_id'] as String?;
+      final me = _ws.currentUserId;
+      if (peerId == null || me == null || peerId == me) return;
+      unawaited(E2eeService.instance.resetSessionFor(me, peerId));
+    });
+
     // Tapping a system notification opens the originating conversation.
     _notificationTapSub =
         _notifications.notificationStream.listen(_onTapPayload);
@@ -119,8 +146,18 @@ class InAppNotificationService with WidgetsBindingObserver {
         _decryptedGroupMessageController.add(message);
       } else {
         if (me != null) {
+          final wasEncrypted = message.encryption == 'signal';
           message = await E2eeService.instance
               .decryptMessage(message, currentUserId: me);
+          // The peer's session with us is stale — and they see no error,
+          // because their encrypt succeeds locally. Ask them to drop it so
+          // their next send re-establishes fresh; throttled per peer.
+          // Live socket only (this handler never runs for history loads).
+          if (wasEncrypted &&
+              message.content == Message.decryptionFailedContent &&
+              message.senderId != me) {
+            _requestSessionReset(message.senderId);
+          }
         }
         _decryptedMessageController.add(message);
       }
@@ -306,11 +343,26 @@ class InAppNotificationService with WidgetsBindingObserver {
     }
   }
 
+  /// Asks [peerId] to drop their session with us, at most once per
+  /// [minInterval]. Throttling keeps a flood of broken messages (or a
+  /// malicious peer) from turning recovery into a control-frame storm.
+  void _requestSessionReset(String peerId) {
+    if (!shouldRequestSessionReset(
+      _lastResetRequest[peerId],
+      DateTime.now(),
+    )) {
+      return;
+    }
+    _lastResetRequest[peerId] = DateTime.now();
+    _ws.sendResetSession(peerId);
+  }
+
   void dispose() {
     _dismissBanner();
     _messageSub?.cancel();
     _groupMessageSub?.cancel();
     _notificationTapSub?.cancel();
+    _resetSessionSub?.cancel();
     _decryptedMessageController.close();
     _decryptedGroupMessageController.close();
     WidgetsBinding.instance.removeObserver(this);
