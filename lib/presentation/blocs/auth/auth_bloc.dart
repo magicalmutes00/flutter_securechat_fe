@@ -82,16 +82,32 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
       errorMessage: null,
     ));
 
+    // A storage read failure (keystore hiccup) is NOT proof of no session —
+    // only positively-absent tokens sign out. Anything else falls back to
+    // the cached profile (offline mode) rather than the login screen.
+    String? token;
+    var storageOk = true;
     try {
-      final token = await _apiClient.getAccessToken();
-      if (token == null) {
-        emit(state.copyWith(
-          status: AuthStatus.unauthenticated,
-          errorMessage: null,
-        ));
-        return;
-      }
+      token = await _apiClient.getAccessToken();
+    } catch (_) {
+      storageOk = false;
+    }
+    if (storageOk && token == null) {
+      emit(state.copyWith(
+        status: AuthStatus.unauthenticated,
+        errorMessage: null,
+      ));
+      return;
+    }
 
+    // Proactive rotation while online: a day-idle cold start refreshes
+    // cleanly here instead of 401-chasing on the first request. Best-effort
+    // — the getProfile path below still handles every failure mode.
+    try {
+      await _apiClient.refreshIfExpiringSoon();
+    } catch (_) {}
+
+    try {
       try {
         // The interceptor transparently refreshes an expired access token.
         final profileData = await _apiClient.getProfile();
@@ -105,12 +121,17 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
           errorMessage: null,
         ));
       } catch (_) {
-        // Either the session is truly dead (the interceptor already wiped
-        // rejected tokens) or the server is unreachable. Only sign out in
-        // the first case — detected by tokens being gone. Otherwise stay
-        // signed in offline with the cached profile.
-        final stillHaveTokens = await _apiClient.getAccessToken() != null;
-        if (!stillHaveTokens) {
+        // Sign out ONLY when the tokens are confirmed gone (the interceptor
+        // wipes them exactly when the server rejects the session). Every
+        // other failure — offline, server waking, keystore hiccup — keeps
+        // the cached profile instead of dropping to login.
+        var tokensGone = false;
+        try {
+          tokensGone = await _apiClient.getAccessToken() == null;
+        } catch (_) {
+          tokensGone = false;
+        }
+        if (storageOk && tokensGone) {
           emit(state.copyWith(
             status: AuthStatus.unauthenticated,
             errorMessage: null,

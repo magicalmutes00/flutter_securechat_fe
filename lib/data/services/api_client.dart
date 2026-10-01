@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -117,13 +118,17 @@ class ApiClient {
       );
 
       if (response.statusCode == 200) {
-        await _storage.write(
-          key: AppConstants.accessTokenKey,
-          value: response.data['access_token'],
-        );
+        // Refresh FIRST, then access: if the app is killed between the two
+        // writes, the stored refresh token is still the one the server
+        // accepts, so the next launch converges instead of being signed
+        // out. (The reverse order would strand a revoked refresh token.)
         await _storage.write(
           key: AppConstants.refreshTokenKey,
           value: response.data['refresh_token'],
+        );
+        await _storage.write(
+          key: AppConstants.accessTokenKey,
+          value: response.data['access_token'],
         );
         return true;
       }
@@ -140,6 +145,46 @@ class ApiClient {
       return false;
     } catch (_) {
       // Transport failure — keep tokens for a later retry.
+      return false;
+    }
+  }
+
+  /// Proactively rotates the session when the stored access token expires
+  /// within [threshold] (default 15 min). Cold starts after a day idle take
+  /// this path — while online with retry opportunity — instead of
+  /// 401-chasing on the first request. Returns true when a usable access
+  /// token is stored afterwards.
+  Future<bool> refreshIfExpiringSoon({
+    Duration threshold = const Duration(minutes: 15),
+  }) async {
+    final token = await _storage.read(key: AppConstants.accessTokenKey);
+    if (token == null) return false;
+    if (!isExpiringSoon(token, DateTime.now().toUtc(), threshold)) return true;
+    return _refreshToken();
+  }
+
+  /// Pure expiry check over an unverified JWT payload (signature is the
+  /// server's job on use; here we only read `exp`). Unknown or unparseable
+  /// tokens report "not soon" — the normal 401 path still handles them.
+  static bool isExpiringSoon(
+    String token,
+    DateTime nowUtc,
+    Duration threshold,
+  ) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return false;
+      final payload = jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))),
+      ) as Map<String, dynamic>;
+      final exp = payload['exp'];
+      if (exp is! num) return false;
+      final expiry = DateTime.fromMillisecondsSinceEpoch(
+        exp.toInt() * 1000,
+        isUtc: true,
+      );
+      return expiry.difference(nowUtc) <= threshold;
+    } catch (_) {
       return false;
     }
   }
