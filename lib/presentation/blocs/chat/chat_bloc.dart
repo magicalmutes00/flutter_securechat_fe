@@ -8,6 +8,7 @@ import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
 import '../../../data/services/in_app_notification_service.dart';
 import '../../../data/services/local_storage_service.dart';
+import '../../../data/services/media_preparation_service.dart';
 import '../../../data/services/websocket_service.dart';
 import '../../../data/services/e2ee/e2ee_service.dart';
 import 'chat_event.dart';
@@ -93,6 +94,7 @@ class _DispatchHeldFile extends ChatEvent {
 /// down the wrong path. Machine-readable server codes arrive separately and
 /// will plug into this same mapping.
 String sendFailureReason(Object e) {
+  if (e is MediaValidationException) return e.message;
   if (e is E2eeEncryptionException) return e.message;
   final text = e.toString().toLowerCase();
   if (text.contains('413') ||
@@ -558,7 +560,25 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatSendFileMessage event,
     Emitter<ChatState> emit,
   ) async {
-    emit(state.copyWith(status: ChatStatus.sending));
+    // Reject doomed files before rendering anything: a file that can never
+    // upload gets a snackbar, not a bubble (there is nothing to retry).
+    try {
+      await MediaPreparationService.validate(
+        filePath: event.filePath,
+        messageType: event.messageType,
+      );
+    } on MediaValidationException catch (e) {
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        errorMessage: e.message,
+      ));
+      return;
+    }
+
+    emit(state.copyWith(
+      status: ChatStatus.sending,
+      pendingUploads: state.pendingUploads + 1,
+    ));
 
     final currentUserId = _wsService.currentUserId ?? '';
 
@@ -616,12 +636,31 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       final encryptedMedia =
           await E2eeService.instance.encryptMediaFile(event.filePath);
 
+      // Progress ticks arrive per Dio write chunk; only re-emit past a 5%
+      // step so a large upload doesn't rebuild the list on every chunk.
+      // Emitting here is safe: Dio only calls back while this upload await
+      // is still pending, i.e. while this handler is alive.
+      var lastEmittedProgress = 0.0;
       final uploadResult = await _apiClient.uploadFile(
         encryptedMedia.cipherPath,
         event.messageType,
         // Keep the original file's name so the server's extension allow-list
         // sees e.g. ".jpg" — the ciphertext content itself is opaque.
         filename: tempMessage.fileName,
+        onSendProgress: (sent, total) {
+          if (isClosed || total <= 0) return;
+          final progress = (sent / total).clamp(0.0, 1.0);
+          if (progress - lastEmittedProgress < 0.05 && progress < 1.0) {
+            return;
+          }
+          lastEmittedProgress = progress;
+          final ticked = state.messages
+              .map((m) => m.id == tempId
+                  ? m.copyWith(uploadProgress: progress)
+                  : m)
+              .toList();
+          emit(state.copyWith(messages: ticked));
+        },
       );
 
       if (uploadResult['success'] != true) {
@@ -646,7 +685,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       );
 
       // The upload succeeded: enrich the optimistic bubble with the hosted
-      // file metadata. It keeps its temp id until the ack swap.
+      // file metadata and drop the progress ring. It keeps its temp id
+      // until the ack swap.
       await _updateTempBubble(
         emit,
         currentUserId: currentUserId,
@@ -656,6 +696,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           fileName: uploadResult['file_name'] as String?,
           fileSize: (uploadResult['file_size'] as num?)?.toInt(),
           mediaType: uploadResult['media_type'] as String?,
+          clearUploadProgress: true,
         ),
       );
 
@@ -683,8 +724,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         add(buildDispatch(_serverReplyId(event.replyToId)));
       }
 
-      emit(state.copyWith(status: ChatStatus.loaded));
+      _finishUploadSlot(emit);
     } catch (e) {
+      _finishUploadSlot(emit);
       // Mark only this bubble failed and surface the reason via snackbar —
       // the conversation stays visible with a retry affordance.
       await _markSendFailed(
@@ -732,6 +774,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
   }
 
+  /// Releases one upload slot. Always paired with the increment at the top
+  /// of [_onSendFileMessage], on success and on failure alike.
+  void _finishUploadSlot(Emitter<ChatState> emit) {
+    emit(state.copyWith(
+      status: ChatStatus.loaded,
+      pendingUploads: state.pendingUploads > 0 ? state.pendingUploads - 1 : 0,
+    ));
+  }
+
   /// Marks one optimistic bubble failed without disturbing the rest of the
   /// conversation. The bubble keeps its local preview and gains a retry
   /// affordance; [reason] is shown once via snackbar.
@@ -747,7 +798,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       currentUserId: currentUserId,
       receiverId: receiverId,
       tempId: tempId,
-      update: (m) => m.copyWith(status: 'failed'),
+      // A frozen progress ring on a dead bubble would imply it is still
+      // moving — clear it along with the failure marking.
+      update: (m) => m.copyWith(
+        status: 'failed',
+        clearUploadProgress: true,
+      ),
     );
     emit(state.copyWith(errorMessage: reason));
   }

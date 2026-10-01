@@ -24,6 +24,11 @@ class ChatState extends Equatable {
   final List<User> searchResults;
   final bool isSearching;
 
+  /// Number of attachment uploads currently in flight. The composer disables
+  /// its attach button while > 0 so uploads stay serialized and a second tap
+  /// can't stack a duplicate send behind the first.
+  final int pendingUploads;
+
   const ChatState({
     this.status = ChatStatus.initial,
     this.messages = const [],
@@ -37,6 +42,7 @@ class ChatState extends Equatable {
     this.typingUserId,
     this.searchResults = const [],
     this.isSearching = false,
+    this.pendingUploads = 0,
   });
 
   ChatState copyWith({
@@ -58,6 +64,7 @@ class ChatState extends Equatable {
     String? typingUserId,
     List<User>? searchResults,
     bool? isSearching,
+    int? pendingUploads,
   }) {
     return ChatState(
       status: status ?? this.status,
@@ -66,6 +73,7 @@ class ChatState extends Equatable {
       lastMessages: lastMessages ?? this.lastMessages,
       unreadCounts: unreadCounts ?? this.unreadCounts,
       currentChatUserId: currentChatUserId ?? this.currentChatUserId,
+      pendingUploads: pendingUploads ?? this.pendingUploads,
       errorMessage:
           clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       hasMoreMessages: hasMoreMessages ?? this.hasMoreMessages,
@@ -90,5 +98,6 @@ class ChatState extends Equatable {
         typingUserId,
         searchResults,
         isSearching,
+        pendingUploads,
       ];
 }

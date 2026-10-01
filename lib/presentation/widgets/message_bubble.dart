@@ -257,6 +257,37 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildMessageContent() {
+    final content = _buildContentBody();
+    final progress = widget.message.uploadProgress;
+    // In-flight uploads dim under a determinate ring; every media kind
+    // shares this overlay so video/audio/documents need no special case.
+    if (!widget.message.isSending || progress == null || progress >= 1) {
+      return content;
+    }
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        Opacity(opacity: 0.55, child: content),
+        SizedBox(
+          width: 36,
+          height: 36,
+          child: CircularProgressIndicator(
+            value: progress,
+            strokeWidth: 3,
+            backgroundColor:
+                context.appColors.onSentBubble.withValues(alpha: 0.25),
+            valueColor: AlwaysStoppedAnimation<Color>(
+              widget.isMe
+                  ? context.appColors.onSentBubble
+                  : context.appColors.primaryEmphasis,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildContentBody() {
     final contentColor = _contentColor();
     if (widget.message.isTextMessage) {
       return Text(

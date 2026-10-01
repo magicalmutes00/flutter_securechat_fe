@@ -427,6 +427,11 @@ class ApiClient {
     String filePath,
     String type, {
     String? filename,
+
+    /// Bytes uploaded / total bytes. Fires per Dio write chunk — callers
+    /// should throttle UI updates (the chat bloc only re-emits past a 5%
+    /// step) rather than rebuilding on every tick.
+    void Function(int sent, int total)? onSendProgress,
   }) async {
     final formData = FormData.fromMap({
       'file': await MultipartFile.fromFile(filePath, filename: filename),
@@ -437,6 +442,7 @@ class ApiClient {
       options: Options(
         headers: {'Content-Type': 'multipart/form-data'},
       ),
+      onSendProgress: onSendProgress,
     );
     return response.data as Map<String, dynamic>;
   }

@@ -35,6 +35,11 @@ class Message extends Equatable {
   final String? mediaKey;
   final String? mediaNonce;
 
+  // Transient 0..1 upload progress for an in-flight optimistic send. Never
+  // serialized: a reopened chat re-derives send state from the server, and
+  // the value changes dozens of times per upload.
+  final double? uploadProgress;
+
   const Message({
     required this.id,
     required this.senderId,
@@ -56,6 +61,7 @@ class Message extends Equatable {
     this.distribution,
     this.mediaKey,
     this.mediaNonce,
+    this.uploadProgress,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
@@ -131,6 +137,12 @@ class Message extends Equatable {
     String? distribution,
     String? mediaKey,
     String? mediaNonce,
+    double? uploadProgress,
+
+    /// copyWith can't distinguish "no change" from "set to null", so
+    /// progress is cleared explicitly (e.g. once the upload finishes and the
+    /// bubble stops showing the ring).
+    bool clearUploadProgress = false,
   }) {
     return Message(
       id: id ?? this.id,
@@ -153,6 +165,9 @@ class Message extends Equatable {
       distribution: distribution ?? this.distribution,
       mediaKey: mediaKey ?? this.mediaKey,
       mediaNonce: mediaNonce ?? this.mediaNonce,
+      uploadProgress: clearUploadProgress
+          ? null
+          : (uploadProgress ?? this.uploadProgress),
     );
   }
 
@@ -194,5 +209,8 @@ class Message extends Equatable {
         distribution,
         mediaKey,
         mediaNonce,
+        // Transient by design: progress ticks rebuild the bubble but are
+        // never persisted (toJson omits the field; fromJson yields null).
+        uploadProgress,
       ];
 }

@@ -11,6 +11,10 @@ class ChatInputBar extends StatelessWidget {
   final TextEditingController controller;
   final VoidCallback onSend;
   final VoidCallback? onAttach;
+
+  /// When false the attach button renders disabled (e.g. while an upload is
+  /// in flight) instead of disappearing, so the composer doesn't jump.
+  final bool attachEnabled;
   final ValueChanged<String>? onChanged;
   final String hintText;
 
@@ -23,6 +27,7 @@ class ChatInputBar extends StatelessWidget {
     required this.controller,
     required this.onSend,
     this.onAttach,
+    this.attachEnabled = true,
     this.onChanged,
     this.hintText = 'Type a message...',
     this.header,
@@ -57,8 +62,10 @@ class ChatInputBar extends StatelessWidget {
                   if (onAttach != null)
                     IconButton(
                       icon: const Icon(Icons.attach_file),
-                      onPressed: onAttach,
-                      tooltip: 'Attach',
+                      onPressed: attachEnabled ? onAttach : null,
+                      tooltip: attachEnabled
+                          ? 'Attach'
+                          : 'Finish the current upload first',
                     ),
                   Expanded(
                     child: TextField(

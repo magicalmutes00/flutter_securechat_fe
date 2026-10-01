@@ -429,12 +429,19 @@ class _ChatScreenState extends State<ChatScreen> {
                 },
               ),
             ),
-            ChatInputBar(
-              controller: _messageController,
-              onSend: _sendMessage,
-              onAttach: _showAttachmentOptions,
-              onChanged: _onComposerChanged,
-              header: _replyingTo == null ? null : _buildReplyPreview(),
+            // Selector (not Builder): the composer rebuilds only when the
+            // uploading flag flips, so typing focus is never disturbed by
+            // incoming messages or progress ticks.
+            BlocSelector<ChatBloc, ChatState, bool>(
+              selector: (state) => state.pendingUploads > 0,
+              builder: (context, uploading) => ChatInputBar(
+                controller: _messageController,
+                onSend: _sendMessage,
+                onAttach: _showAttachmentOptions,
+                attachEnabled: !uploading,
+                onChanged: _onComposerChanged,
+                header: _replyingTo == null ? null : _buildReplyPreview(),
+              ),
             ),
           ],
         ),

@@ -6,6 +6,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/services/api_client.dart';
+import '../../data/services/media_preparation_service.dart';
 
 /// Composes and publishes a new status ("story"). Supports either a plain text
 /// status or an image picked from the gallery/camera.
@@ -51,6 +52,16 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
       String? mediaType;
 
       if (_image != null) {
+        // Same pre-flight gate as chat sends: fail here with an actionable
+        // message instead of after a full upload.
+        try {
+          await MediaPreparationService.validate(
+            filePath: _image!.path,
+            messageType: AppConstants.messageTypeImage,
+          );
+        } on MediaValidationException catch (e) {
+          throw Exception(e.message);
+        }
         final upload =
             await _api.uploadFile(_image!.path, AppConstants.messageTypeImage);
         if (upload['success'] != true) {
