@@ -255,6 +255,42 @@ class E2eeManager {
     );
   }
 
+  /// Rotates trust to the peer's currently published identity: fetches their
+  /// latest bundle, verifies it is self-consistent (its signed-prekey
+  /// signature checks out against its own identity key — the same check as
+  /// [verifyPeerIdentity]), then replaces the stored trusted identity and
+  /// drops the session so the next exchange re-establishes.
+  ///
+  /// Returns false when there is no bundle or it is internally inconsistent
+  /// (do NOT rotate then — that would trust attacker material). Used to
+  /// recover from a peer reinstall, which legitimately changes identity;
+  /// resetting the session alone is not enough, because X3DH keeps failing
+  /// against the stale trusted identity.
+  Future<bool> rotatePeerIdentity(String peerUserId) async {
+    final bundle = await _transport.fetchBundle(peerUserId);
+    if (bundle == null) return false;
+    final identityKey = IdentityKey.fromBytes(
+      base64Decode(bundle.identityKeyPublic),
+      0,
+    );
+    final signedPreKeyPublic = Curve.decodePoint(
+      base64Decode(bundle.signedPrekeyPublic),
+      0,
+    );
+    final consistent = Curve.verifySignature(
+      identityKey.publicKey,
+      signedPreKeyPublic.serialize(),
+      base64Decode(bundle.signedPrekeySignature),
+    );
+    if (!consistent) return false;
+    await _signalStore.saveIdentity(
+      SignalProtocolAddress(peerUserId, 1),
+      identityKey,
+    );
+    await resetSession(peerUserId);
+    return true;
+  }
+
   /// Stores the identity key of a peer and verifies the peer's signed prekey
   /// signature matches, preventing identity-key substitution.
   Future<bool> verifyPeerIdentity(String peerUserId) async {

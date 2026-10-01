@@ -38,6 +38,21 @@ class E2eeEncryptionException implements Exception {
   String toString() => message;
 }
 
+  /// Best-effort identity rotation for the send-recovery path: adopts the
+  /// peer's currently published identity when it changed (reinstall) and is
+  /// self-consistent. Never throws — the subsequent establish reports the
+  /// real cause if recovery is impossible.
+  Future<void> _adoptLatestIdentity(
+    E2eeManager manager,
+    String peerUserId,
+  ) async {
+    try {
+      await manager.rotatePeerIdentity(peerUserId);
+    } catch (_) {
+      // No bundle / inconsistent bundle / transport down: leave trust alone.
+    }
+  }
+
 /// One-line cause for encryption failures: the exception type plus the head
 /// of its message. Libsignal/transport messages carry no key material, so
 /// this is safe to surface; it turns "could not encrypt" from a mystery
@@ -161,11 +176,13 @@ class E2eeService {
       try {
         return pack(await manager.encrypt(receiverId, plaintext));
       } catch (e) {
-        // The session may be stale (e.g. the peer reinstalled and the local
-        // record no longer matches): drop it, rebuild once via X3DH, retry.
-        // A missing bundle is NOT retried — re-fetching a 404 helps no one
-        // and each fetch burns one of the peer's one-time prekeys.
+        // The session may be stale, or the peer's identity may have rotated
+        // (reinstall): drop the session, adopt their currently published
+        // identity when it changed, rebuild once via X3DH, retry. A missing
+        // bundle is NOT retried — re-fetching a 404 helps no one and each
+        // fetch burns one of the peer's one-time prekeys.
         await manager.resetSession(receiverId);
+        await _adoptLatestIdentity(manager, receiverId);
         await manager.establishSession(receiverId);
         return pack(await manager.encrypt(receiverId, plaintext));
       }
@@ -327,15 +344,18 @@ class E2eeService {
         'error=${e.runtimeType}',
       );
       // Self-heal a stale session (e.g. the peer re-registered their
-      // identity after a reinstall): trust their current published identity
-      // and drop the broken session so the next exchange re-establishes.
-      // Only for crypto-state errors — wiping the session on duplicate,
-      // format or transport errors would brick all future messages.
+      // identity after a reinstall): adopt their current published identity
+      // when it changed and drop the broken session so the next exchange
+      // re-establishes. Resetting the session alone is NOT enough — X3DH
+      // keeps failing against the stale trusted identity, which is exactly
+      // how a chat gets permanently stuck on "unable to decrypt".
+      // Only for crypto-state errors — touching trust on duplicate, format
+      // or transport errors would brick all future messages.
       if (_isSessionStateError(e)) {
-        debugPrint('[E2EE] resetting stale session with ${message.senderId}');
+        debugPrint('[E2EE] rotating stale identity for ${message.senderId}');
         try {
           await (await forUser(currentUserId))
-              .resetSession(message.senderId);
+              .rotatePeerIdentity(message.senderId);
         } catch (_) {
           // Best-effort recovery; the placeholder below is returned regardless.
         }
