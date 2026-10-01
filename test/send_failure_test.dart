@@ -82,6 +82,22 @@ void main() {
     });
   });
 
+  group('fileIdOfUrl', () {
+    test('extracts the id from server file URLs only', () {
+      expect(
+        fileIdOfUrl('/api/files/5c5f2449-649a-4ba0-bf8e-8e359a55e5db'),
+        '5c5f2449-649a-4ba0-bf8e-8e359a55e5db',
+      );
+      expect(fileIdOfUrl('/data/user/0/app/photo.jpg'), isNull);
+      expect(fileIdOfUrl('temp_123'), isNull);
+      expect(fileIdOfUrl(null), isNull);
+      expect(fileIdOfUrl(''), isNull);
+      expect(fileIdOfUrl('/api/files/'), isNull);
+      expect(fileIdOfUrl('/api/files/a/b'), isNull);
+      expect(fileIdOfUrl('https://cdn/x/api/files/abc'), isNull);
+    });
+  });
+
   group('sendFailureReason', () {
     test('oversize wording for 413 and too-large text', () {
       expect(

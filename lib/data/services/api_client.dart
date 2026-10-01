@@ -473,6 +473,22 @@ class ApiClient {
     await _dio.delete('/api/chat/message/$messageId');
   }
 
+  /// Best-effort hosted-asset cleanup. Returns true when the server removed
+  /// the file row and its Cloudinary bytes, false when the file is still
+  /// referenced (or belongs to someone else — the server answers both the
+  /// same way on purpose). Transport failures throw [ApiException]; callers
+  /// doing cleanup swallow that — the message delete itself already
+  /// succeeded.
+  Future<bool> deleteFile(String fileId) async {
+    try {
+      final response = await _dio.delete('/api/files/$fileId');
+      final data = response.data;
+      return data is Map && data['success'] == true;
+    } on DioException catch (e) {
+      throw _sendError(e, 'Failed to delete file');
+    }
+  }
+
   // File Upload Methods
   Future<Map<String, dynamic>> uploadFile(
     String filePath,

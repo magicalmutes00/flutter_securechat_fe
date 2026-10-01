@@ -144,6 +144,17 @@ String _apiErrorReason(ApiException e) {
   return e.message;
 }
 
+/// Extracts the hosted file id from a server file URL (`/api/files/<id>`).
+/// Returns null for local paths and anything else — only server URLs are
+/// ever passed to the file-delete endpoint.
+String? fileIdOfUrl(String? url) {
+  const prefix = '/api/files/';
+  if (url == null || !url.startsWith(prefix)) return null;
+  final id = url.substring(prefix.length);
+  if (id.isEmpty || id.contains('/')) return null;
+  return id;
+}
+
 class ChatBloc extends Bloc<ChatEvent, ChatState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
@@ -1001,6 +1012,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         tempId: event.tempId,
         reason: sendFailureReason(e),
       );
+      // Best-effort orphan cleanup: the hosted bytes belong to no message,
+      // and a retry uploads fresh ciphertext anyway. Offline this throws —
+      // the orphan then waits for a server-side sweep.
+      final orphanId = fileIdOfUrl(event.fileUrl);
+      if (orphanId != null) {
+        try {
+          await _apiClient.deleteFile(orphanId);
+        } catch (_) {}
+      }
     }
   }
 
@@ -1369,8 +1389,21 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatDeleteMessage event,
     Emitter<ChatState> emit,
   ) async {
+    // Capture the hosted URL before the row disappears: the server deletes
+    // the row's own reference, and we then ask it to drop the asset too
+    // when nothing else references it.
+    final doomed = state.messages.where((m) => m.id == event.messageId);
+    final doomedFileId =
+        doomed.isEmpty ? null : fileIdOfUrl(doomed.first.filePath);
     try {
       await _apiClient.deleteMessage(event.messageId);
+      if (doomedFileId != null) {
+        try {
+          await _apiClient.deleteFile(doomedFileId);
+        } catch (_) {
+          // Cleanup is best-effort; the message itself is already gone.
+        }
+      }
 
       final updatedMessages =
           state.messages.where((m) => m.id != event.messageId).toList();
