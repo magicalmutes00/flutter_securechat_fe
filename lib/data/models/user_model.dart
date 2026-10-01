@@ -42,14 +42,14 @@ class User extends Equatable {
       displayName: displayName,
       avatarUrl: json['avatar_url'] as String?,
       createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
+          ? DateTime.parse(json['created_at'] as String).toLocal()
           : null,
       updatedAt: json['updated_at'] != null
-          ? DateTime.parse(json['updated_at'] as String)
+          ? DateTime.parse(json['updated_at'] as String).toLocal()
           : null,
       isOnline: json['is_online'] as bool? ?? false,
       lastSeen: json['last_seen'] != null
-          ? DateTime.parse(json['last_seen'] as String)
+          ? DateTime.parse(json['last_seen'] as String).toLocal()
           : null,
     );
   }

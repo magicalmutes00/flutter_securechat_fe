@@ -28,8 +28,8 @@ class Group extends Equatable {
       memberIds: (json['member_ids'] as List<dynamic>? ?? [])
           .map((e) => e as String)
           .toList(),
-      createdAt: DateTime.parse(json['created_at'] as String),
-      updatedAt: DateTime.parse(json['updated_at'] as String),
+      createdAt: DateTime.parse(json['created_at'] as String).toLocal(),
+      updatedAt: DateTime.parse(json['updated_at'] as String).toLocal(),
     );
   }
 

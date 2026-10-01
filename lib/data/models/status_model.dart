@@ -33,8 +33,8 @@ class Status extends Equatable {
       text: json['text'] as String?,
       mediaPath: json['media_path'] as String?,
       mediaType: json['media_type'] as String?,
-      createdAt: DateTime.parse(json['created_at'] as String),
-      expiresAt: DateTime.parse(json['expires_at'] as String),
+      createdAt: DateTime.parse(json['created_at'] as String).toLocal(),
+      expiresAt: DateTime.parse(json['expires_at'] as String).toLocal(),
       viewers: (json['viewers'] as List<dynamic>? ?? [])
           .map((e) => e as String)
           .toList(),

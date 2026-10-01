@@ -64,11 +64,13 @@ class Message extends Equatable {
       fileSize: json['file_size'] as int?,
       mediaType: json['media_type'] as String?,
       status: json['status'] as String? ?? 'sent',
+      // Server timestamps are UTC — normalize to device-local on parse so
+      // every display path (bubbles, tiles, day dividers) renders correctly.
       createdAt: json['created_at'] != null
-          ? DateTime.parse(json['created_at'] as String)
+          ? DateTime.parse(json['created_at'] as String).toLocal()
           : DateTime.now(),
       updatedAt: json['updated_at'] != null
-          ? DateTime.parse(json['updated_at'] as String)
+          ? DateTime.parse(json['updated_at'] as String).toLocal()
           : null,
       encryption: json['encryption'] as String? ?? 'none',
       cipherType: json['cipher_type'] as int?,
