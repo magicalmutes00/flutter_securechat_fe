@@ -5,10 +5,12 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
 import '../../../data/services/e2ee/e2ee_service.dart';
 import '../../../data/services/media_cache_service.dart';
+import '../../../data/services/media_preparation_service.dart';
 import '../../../data/services/firebase_auth_service.dart';
 import '../../../data/services/local_storage_service.dart';
 import '../../../data/services/push_notification_service.dart';
@@ -34,6 +36,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthLogoutRequested>(_onAuthLogoutRequested);
     on<AuthProfileUpdateRequested>(_onAuthProfileUpdateRequested);
     on<AuthAvatarUploadRequested>(_onAuthAvatarUploadRequested);
+    on<AuthClearProfileError>(_onAuthClearProfileError);
   }
 
   /// Last-known profile, so a cold start without connectivity can still
@@ -540,13 +543,17 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     emit(const AuthState(status: AuthStatus.unauthenticated));
   }
 
+  /// Profile edits run under [AuthState.isSavingProfile] with the global
+  /// status untouched: main.dart routes off [AuthStatus], so flipping it to
+  /// loading/error here boots the user to splash/login mid-save. Failures
+  /// surface as [AuthState.profileErrorMessage] on the profile screen only.
   Future<void> _onAuthProfileUpdateRequested(
     AuthProfileUpdateRequested event,
     Emitter<AuthState> emit,
   ) async {
     emit(state.copyWith(
-      status: AuthStatus.loading,
-      errorMessage: null,
+      clearProfileError: true,
+      isSavingProfile: true,
     ));
 
     try {
@@ -557,16 +564,16 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
       final result = await _apiClient.updateProfile(data);
       final user = User.fromJson(result);
+      await _cacheProfile(user);
 
       emit(state.copyWith(
-        status: AuthStatus.authenticated,
+        isSavingProfile: false,
         user: user,
-        errorMessage: null,
       ));
     } catch (e) {
       emit(state.copyWith(
-        status: AuthStatus.error,
-        errorMessage: e.toString(),
+        isSavingProfile: false,
+        profileErrorMessage: e.toString(),
       ));
     }
   }
@@ -576,35 +583,76 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     Emitter<AuthState> emit,
   ) async {
     emit(state.copyWith(
-      status: AuthStatus.loading,
-      errorMessage: null,
+      clearProfileError: true,
+      isSavingProfile: true,
     ));
 
     try {
-      final result = await _apiClient.uploadFile(event.filePath, 'image');
+      // Same pipeline as chat sends: shrink, gate, upload. A rejected file
+      // fails here with an actionable message instead of after a full
+      // upload — and, crucially, without touching the global auth status.
+      final original = event.filePath;
+      final sendPath = await MediaPreparationService.prepareImage(
+        filePath: original,
+        messageType: AppConstants.messageTypeImage,
+      );
+      try {
+        await MediaPreparationService.validate(
+          filePath: sendPath,
+          messageType: AppConstants.messageTypeImage,
+        );
+      } on MediaValidationException {
+        await MediaPreparationService.deleteTemp(sendPath, original);
+        rethrow;
+      }
+      final result = await _apiClient.uploadFile(sendPath, 'image');
+      await MediaPreparationService.deleteTemp(sendPath, original);
       if (result['success'] == true) {
         final avatarUrl = result['url'] as String?;
         if (avatarUrl != null) {
           final profileResult =
               await _apiClient.updateProfile({'avatar_url': avatarUrl});
           final user = User.fromJson(profileResult);
+          await _cacheProfile(user);
           emit(state.copyWith(
-            status: AuthStatus.authenticated,
+            isSavingProfile: false,
             user: user,
-            errorMessage: null,
           ));
           return;
         }
       }
       emit(state.copyWith(
-        status: AuthStatus.error,
-        errorMessage: 'Failed to upload avatar',
+        isSavingProfile: false,
+        profileErrorMessage: 'Failed to upload avatar',
       ));
     } catch (e) {
       emit(state.copyWith(
-        status: AuthStatus.error,
-        errorMessage: e.toString(),
+        isSavingProfile: false,
+        profileErrorMessage: _friendlyUploadError(e),
       ));
     }
+  }
+
+  void _onAuthClearProfileError(
+    AuthClearProfileError event,
+    Emitter<AuthState> emit,
+  ) {
+    if (state.profileErrorMessage == null) return;
+    emit(state.copyWith(clearProfileError: true));
+  }
+
+  String _friendlyUploadError(Object e) {
+    if (e is MediaValidationException) return e.message;
+    if (e is ApiException) {
+      switch (e.code) {
+        case 'file_too_large':
+          return 'That photo is too large for a profile picture.';
+        case 'extension_not_allowed':
+          return "That file type can't be used as a photo.";
+        case 'unauthorized':
+          return 'Your session expired — please log in again.';
+      }
+    }
+    return 'Could not set that photo. Please try another.';
   }
 }

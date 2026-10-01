@@ -107,3 +107,10 @@ class AuthAvatarUploadRequested extends AuthEvent {
   @override
   List<Object?> get props => [filePath];
 }
+
+/// Clears a shown profile error. Dispatched by the UI right after displaying
+/// it so an identical follow-up error still trips the listener's change
+/// guard instead of being silently swallowed.
+class AuthClearProfileError extends AuthEvent {
+  const AuthClearProfileError();
+}

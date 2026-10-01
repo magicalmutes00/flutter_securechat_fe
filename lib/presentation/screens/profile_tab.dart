@@ -180,17 +180,22 @@ class _ProfileTabState extends State<ProfileTab> {
     return Scaffold(
       appBar: AppBar(title: const Text('Profile')),
       body: BlocConsumer<AuthBloc, AuthState>(
+        listenWhen: (prev, curr) =>
+            curr.profileErrorMessage != null &&
+            prev.profileErrorMessage != curr.profileErrorMessage,
         listener: (context, state) {
-          if (state.status == AuthStatus.error) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text(state.errorMessage ?? 'An error occurred')),
-            );
-          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+                content:
+                    Text(state.profileErrorMessage ?? 'An error occurred')),
+          );
+          // Clear so an identical follow-up error still trips the guard
+          // above instead of being silently swallowed.
+          context.read<AuthBloc>().add(const AuthClearProfileError());
         },
         builder: (context, state) {
           final user = state.user;
-          final isSaving = state.status == AuthStatus.loading;
+          final isSaving = state.isSavingProfile;
           if (user == null) {
             return const EmptyState(
               icon: Icons.person_off_outlined,
