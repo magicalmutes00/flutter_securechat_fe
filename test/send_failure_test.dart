@@ -82,6 +82,38 @@ void main() {
     });
   });
 
+  group('applyMediaEnvelope', () {
+    Message fileMessage() => Message(
+          id: 'srv-1',
+          senderId: 'user-a',
+          receiverId: 'user-b',
+          messageType: 'image',
+          content: '',
+          filePath: '/api/files/abc',
+          status: 'sent',
+          createdAt: DateTime.utc(2026, 1, 1),
+        );
+
+    test('populates the transient media key fields', () {
+      const envelope = '{"k":"a2V5","iv":"bm9uY2U=","text":""}';
+      final resolved = E2eeService.instance
+          .applyMediaEnvelope(fileMessage(), envelope);
+      expect(resolved.mediaKey, 'a2V5');
+      expect(resolved.mediaNonce, 'bm9uY2U=');
+      // The hosted path and everything else survive untouched.
+      expect(resolved.filePath, '/api/files/abc');
+      expect(resolved.id, 'srv-1');
+    });
+
+    test('garbage envelope leaves the message untouched, never throws', () {
+      final original = fileMessage();
+      final resolved =
+          E2eeService.instance.applyMediaEnvelope(original, 'not-json');
+      expect(resolved.mediaKey, isNull);
+      expect(resolved, original);
+    });
+  });
+
   group('fileIdOfUrl', () {
     test('extracts the id from server file URLs only', () {
       expect(

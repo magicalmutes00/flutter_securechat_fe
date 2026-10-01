@@ -397,6 +397,23 @@ class E2eeService {
         name.contains('LegacyMessage');
   }
 
+  /// Applies an already-known media envelope (committed at send time) to
+  /// [message], populating the transient media key fields without a decrypt
+  /// round-trip. Used by the ack swap, which bypasses [decryptMessage]:
+  /// without this, our own just-sent bubble carries no media key and can
+  /// only render undecrypted ciphertext. Never throws.
+  Message applyMediaEnvelope(Message message, String envelopeJson) {
+    try {
+      final envelope = jsonDecode(envelopeJson) as Map<String, dynamic>;
+      return message.copyWith(
+        mediaKey: envelope['k'] as String?,
+        mediaNonce: envelope['iv'] as String?,
+      );
+    } catch (_) {
+      return message;
+    }
+  }
+
   Message _applyDecryptedPlaintext(Message message, String plaintext) {
     if (message.isTextMessage) {
       return message.copyWith(

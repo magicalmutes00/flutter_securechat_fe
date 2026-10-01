@@ -1097,12 +1097,20 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
     if (server.id.isEmpty) return;
 
-    final resolved = _asDisplayable(server.copyWith(
+    var resolved = _asDisplayable(server.copyWith(
       content: plaintext.isNotEmpty ? plaintext : server.content,
       encryption: 'none',
       cipherBody: null,
       cipherType: null,
     ));
+    if (!resolved.isTextMessage && plaintext.isNotEmpty) {
+      // The ack swap bypasses decryptMessage: without this, our own
+      // just-sent bubble carries the hosted path but no media key, so it
+      // downloads ciphertext and renders nothing. For file sends `plaintext`
+      // is the committed key envelope.
+      resolved =
+          E2eeService.instance.applyMediaEnvelope(resolved, plaintext);
+    }
 
     final messages = [...state.messages];
     var swappedId = tempId;

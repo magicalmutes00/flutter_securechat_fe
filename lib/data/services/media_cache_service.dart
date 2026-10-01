@@ -33,6 +33,12 @@ class MediaCacheService {
   Directory? _dir;
   List<int>? _keyBytes;
 
+  /// Cache generation: bumped when the meaning of a cached entry changes.
+  /// v1 entries may hold UNDECRYPTED ciphertext (cached by the broken
+  /// sender path that skipped decryption without a media key) — serving
+  /// them renders nothing, forever, since cache hits bypass decrypt.
+  static const _generation = 'v2';
+
   Future<Directory> _cacheDir() async {
     final existing = _dir;
     if (existing != null) return existing;
@@ -40,6 +46,21 @@ class MediaCacheService {
     final dir = Directory('${base.path}${Platform.pathSeparator}media');
     if (!await dir.exists()) {
       await dir.create(recursive: true);
+    } else {
+      // One-time migration: this directory is ours alone, so any entry
+      // predating the current generation is dropped rather than served.
+      final marker =
+          File('${dir.path}${Platform.pathSeparator}.$_generation');
+      if (!await marker.exists()) {
+        for (final entry in dir.listSync()) {
+          try {
+            await entry.delete(recursive: true);
+          } catch (_) {}
+        }
+        try {
+          await marker.writeAsString(_generation);
+        } catch (_) {}
+      }
     }
     _dir = dir;
     return dir;
