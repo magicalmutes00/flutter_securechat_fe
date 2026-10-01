@@ -387,6 +387,9 @@ class _ChatScreenState extends State<ChatScreen> {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(state.errorMessage!)),
           );
+          // Clear so an identical follow-up error still trips the change
+          // guard above instead of being silently swallowed.
+          context.read<ChatBloc>().add(const ChatClearError());
         },
         child: Column(
           children: [
@@ -541,6 +544,13 @@ class _ChatScreenState extends State<ChatScreen> {
               onTapQuote:
                   quoted == null ? null : () => _jumpToQuoted(quoted.id),
               isHighlighted: _highlightedId == message.id,
+              // Failed own-bubbles re-run the send pipeline on tap; the
+              // failed attempt is dropped, never replayed on the wire.
+              onRetry: message.isFailed
+                  ? () => context.read<ChatBloc>().add(
+                        ChatRetrySend(tempId: message.id),
+                      )
+                  : null,
             ),
           ),
         ),

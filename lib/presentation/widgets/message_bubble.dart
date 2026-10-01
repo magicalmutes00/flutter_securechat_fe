@@ -36,6 +36,10 @@ class MessageBubble extends StatefulWidget {
   /// Briefly true after a quote-strip jump lands here: renders a glow ring.
   final bool isHighlighted;
 
+  /// Called when a failed own-bubble's error icon is tapped (re-run the
+  /// send). Null hides the retry affordance even on failed bubbles.
+  final VoidCallback? onRetry;
+
   const MessageBubble({
     super.key,
     required this.message,
@@ -48,6 +52,7 @@ class MessageBubble extends StatefulWidget {
     this.onReply,
     this.onTapQuote,
     this.isHighlighted = false,
+    this.onRetry,
   });
 
   @override
@@ -346,6 +351,28 @@ class _MessageBubbleState extends State<MessageBubble>
   }
 
   Widget _buildStatusIcon() {
+    // A failed send shows a tappable red icon (retry); an in-flight
+    // optimistic send shows a quiet clock. Neither disturbs the thread.
+    if (widget.message.isFailed) {
+      final icon = Icon(
+        Icons.error_outline,
+        size: 16,
+        color: context.colors.error,
+      );
+      if (widget.onRetry == null) return icon;
+      return GestureDetector(
+        onTap: widget.onRetry,
+        behavior: HitTestBehavior.opaque,
+        child: icon,
+      );
+    }
+    if (widget.message.isSending) {
+      return Icon(
+        Icons.access_time,
+        size: 15,
+        color: context.appColors.onSentBubble.withValues(alpha: 0.8),
+      );
+    }
     // Read receipts pop in lime on the blue bubble; delivery states stay
     // quiet so "read" is unmistakable.
     if (widget.message.isRead) {

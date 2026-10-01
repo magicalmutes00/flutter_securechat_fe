@@ -164,6 +164,12 @@ class Message extends Equatable {
   bool get isSent => status == 'sent';
   bool get isDelivered => status == 'delivered';
   bool get isRead => status == 'read';
+
+  /// Local-only send states for optimistic bubbles: 'sending' while
+  /// encryption/upload is in flight, 'failed' when the send died. A failure
+  /// marks only this bubble — never the whole conversation.
+  bool get isSending => status == 'sending';
+  bool get isFailed => status == 'failed';
   bool get isGroupMessage => groupId != null;
 
   @override

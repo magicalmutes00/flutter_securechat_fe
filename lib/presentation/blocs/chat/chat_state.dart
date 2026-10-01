@@ -47,6 +47,12 @@ class ChatState extends Equatable {
     Map<String, int>? unreadCounts,
     String? currentChatUserId,
     String? errorMessage,
+
+    /// Set to true to clear a previously shown error. copyWith can't
+    /// distinguish "no change" from "set to null" for nullable fields, so
+    /// without this flag a shown snackbar message would linger in state and
+    /// suppress the next identical error via the listener's change guard.
+    bool clearErrorMessage = false,
     bool? hasMoreMessages,
     bool? isTyping,
     String? typingUserId,
@@ -60,7 +66,8 @@ class ChatState extends Equatable {
       lastMessages: lastMessages ?? this.lastMessages,
       unreadCounts: unreadCounts ?? this.unreadCounts,
       currentChatUserId: currentChatUserId ?? this.currentChatUserId,
-      errorMessage: errorMessage ?? this.errorMessage,
+      errorMessage:
+          clearErrorMessage ? null : (errorMessage ?? this.errorMessage),
       hasMoreMessages: hasMoreMessages ?? this.hasMoreMessages,
       isTyping: isTyping ?? this.isTyping,
       typingUserId: typingUserId ?? this.typingUserId,

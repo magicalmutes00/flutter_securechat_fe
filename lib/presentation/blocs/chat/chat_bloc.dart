@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../data/models/message_model.dart';
@@ -87,6 +88,29 @@ class _DispatchHeldFile extends ChatEvent {
       ];
 }
 
+/// Human-readable reason for a send-pipeline failure. The raw exception is
+/// deliberately not shown: Dio's generic "status code of 500" text sent users
+/// down the wrong path. Machine-readable server codes arrive separately and
+/// will plug into this same mapping.
+String sendFailureReason(Object e) {
+  if (e is E2eeEncryptionException) return e.message;
+  final text = e.toString().toLowerCase();
+  if (text.contains('413') ||
+      text.contains('too large') ||
+      text.contains('exceeds maximum')) {
+    return 'That file is too large to send.';
+  }
+  if (text.contains('socketexception') ||
+      text.contains('connection') ||
+      text.contains('network is unreachable') ||
+      text.contains('host lookup') ||
+      text.contains('timed out') ||
+      text.contains('timeout')) {
+    return 'No connection — the message was not sent. Try again when you are back online.';
+  }
+  return 'Could not send that attachment. Tap it to retry.';
+}
+
 class ChatBloc extends Bloc<ChatEvent, ChatState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
@@ -103,6 +127,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   /// when the hold expires (quoted bubble never acked — e.g. its own send
   /// failed and was rolled back).
   final Map<String, List<ChatEvent Function(String?)>> _heldSends = {};
+
+  /// Server file URL (`/api/files/…`) → optimistic temp id, registered when a
+  /// file dispatch goes out and consumed by the ack. Lets the ack swap the
+  /// exact bubble instead of guessing the oldest temp when several uploads
+  /// are in flight at once.
+  final Map<String, String> _pendingFileAck = {};
 
   static bool _isTempId(String? id) => id != null && id.startsWith('temp_');
 
@@ -141,6 +171,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatSearchUsers>(_onSearchUsers);
     on<ChatDeleteMessage>(_onDeleteMessage);
     on<ChatReset>(_onChatReset);
+    on<ChatClearError>(_onChatClearError);
+    on<ChatRetrySend>(_onChatRetrySend);
 
     _subscribeToWebSocket();
   }
@@ -530,6 +562,55 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
     final currentUserId = _wsService.currentUserId ?? '';
 
+    // Render the optimistic bubble FIRST from the local file so the sender
+    // sees instant feedback while encryption/upload runs. A failure later
+    // marks this same bubble failed (with a retry affordance) instead of
+    // replacing the whole conversation with a full-screen error.
+    final tempId = 'temp_${DateTime.now().millisecondsSinceEpoch}';
+    final tempMessage = Message(
+      id: tempId,
+      senderId: currentUserId,
+      receiverId: event.receiverId,
+      messageType: event.messageType,
+      content: '',
+      replyToId: event.replyToId,
+      filePath: event.filePath,
+      fileName: event.filePath.split('/').last.split('\\').last,
+      status: 'sending',
+      createdAt: DateTime.now(),
+    );
+
+    final newLastMessages =
+        Map<String, Message>.from(state.lastMessages);
+    newLastMessages[event.receiverId] = tempMessage;
+    final updatedConversations =
+        Map<String, User>.from(state.conversations);
+    if (!updatedConversations.containsKey(event.receiverId)) {
+      updatedConversations[event.receiverId] = User(
+        id: event.receiverId,
+        displayName: null,
+        email: null,
+        phone: null,
+        avatarUrl: null,
+        isOnline: false,
+        lastSeen: null,
+      );
+    }
+
+    emit(state.copyWith(
+      status: ChatStatus.loaded,
+      messages: [...state.messages, tempMessage],
+      lastMessages: newLastMessages,
+      conversations: updatedConversations,
+    ));
+
+    if (currentUserId.isNotEmpty) {
+      await _localStorage.addMessage(
+          currentUserId, event.receiverId, tempMessage);
+      await _localStorage.saveConversations(
+          currentUserId, updatedConversations, newLastMessages);
+    }
+
     try {
       // Encrypt the media bytes end-to-end before they leave the device.
       final encryptedMedia =
@@ -540,7 +621,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         event.messageType,
         // Keep the original file's name so the server's extension allow-list
         // sees e.g. ".jpg" — the ciphertext content itself is opaque.
-        filename: event.filePath.split('/').last.split('\\').last,
+        filename: tempMessage.fileName,
       );
 
       if (uploadResult['success'] != true) {
@@ -564,68 +645,34 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         envelope: envelope,
       );
 
-      // Optimistic bubble rendering the LOCAL file so the sender sees it
-      // instantly; the server echo later swaps in the hosted version.
-      final tempMessage = Message(
-        id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
-        senderId: currentUserId,
+      // The upload succeeded: enrich the optimistic bubble with the hosted
+      // file metadata. It keeps its temp id until the ack swap.
+      await _updateTempBubble(
+        emit,
+        currentUserId: currentUserId,
         receiverId: event.receiverId,
-        messageType: event.messageType,
-        content: '',
-        replyToId: event.replyToId,
-        filePath: event.filePath,
-        fileName: uploadResult['file_name'] as String?,
-        fileSize: (uploadResult['file_size'] as num?)?.toInt(),
-        mediaType: uploadResult['media_type'] as String?,
-        status: 'sent',
-        createdAt: DateTime.now(),
+        tempId: tempId,
+        update: (m) => m.copyWith(
+          fileName: uploadResult['file_name'] as String?,
+          fileSize: (uploadResult['file_size'] as num?)?.toInt(),
+          mediaType: uploadResult['media_type'] as String?,
+        ),
       );
-
-      final newLastMessages =
-          Map<String, Message>.from(state.lastMessages);
-      newLastMessages[event.receiverId] = tempMessage;
-      final updatedConversations =
-          Map<String, User>.from(state.conversations);
-      if (!updatedConversations.containsKey(event.receiverId)) {
-        updatedConversations[event.receiverId] = User(
-          id: event.receiverId,
-          displayName: null,
-          email: null,
-          phone: null,
-          avatarUrl: null,
-          isOnline: false,
-          lastSeen: null,
-        );
-      }
-
-      emit(state.copyWith(
-        status: ChatStatus.loaded,
-        messages: [...state.messages, tempMessage],
-        lastMessages: newLastMessages,
-        conversations: updatedConversations,
-      ));
-
-      if (currentUserId.isNotEmpty) {
-        await _localStorage.addMessage(
-            currentUserId, event.receiverId, tempMessage);
-        await _localStorage.saveConversations(
-            currentUserId, updatedConversations, newLastMessages);
-      }
 
       _DispatchHeldFile buildDispatch(String? resolvedReplyId) {
         return _DispatchHeldFile(
           receiverId: event.receiverId,
           messageType: event.messageType,
           fileUrl: fileUrl,
-          fileName: tempMessage.fileName,
-          fileSize: tempMessage.fileSize,
-          mediaType: tempMessage.mediaType,
+          fileName: uploadResult['file_name'] as String?,
+          fileSize: (uploadResult['file_size'] as num?)?.toInt(),
+          mediaType: uploadResult['media_type'] as String?,
           envelopeJson: jsonEncode(envelope),
           encryption: crypto['encryption'] as String? ?? 'none',
           cipherType: crypto['cipher_type'] as int?,
           cipherBody: crypto['cipher_body'] as String?,
           replyToId: resolvedReplyId,
-          tempId: tempMessage.id,
+          tempId: tempId,
         );
       }
 
@@ -638,9 +685,127 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
       emit(state.copyWith(status: ChatStatus.loaded));
     } catch (e) {
-      emit(state.copyWith(
-        status: ChatStatus.error,
-        errorMessage: e.toString(),
+      // Mark only this bubble failed and surface the reason via snackbar —
+      // the conversation stays visible with a retry affordance.
+      await _markSendFailed(
+        emit,
+        currentUserId: currentUserId,
+        receiverId: event.receiverId,
+        tempId: tempId,
+        reason: sendFailureReason(e),
+      );
+    }
+  }
+
+  /// Applies [update] to the optimistic bubble [tempId] in state, in the
+  /// conversation preview when it points at it, and in the local cache copy
+  /// (so a reopened chat never shows a stale pre-update version).
+  Future<void> _updateTempBubble(
+    Emitter<ChatState> emit, {
+    required String currentUserId,
+    required String receiverId,
+    required String tempId,
+    required Message Function(Message) update,
+  }) async {
+    final existing = state.messages.where((m) => m.id == tempId);
+    if (existing.isEmpty) return;
+    final updated = update(existing.first);
+
+    final messages =
+        state.messages.map((m) => m.id == tempId ? updated : m).toList();
+    final newLastMessages = Map<String, Message>.from(state.lastMessages);
+    if (newLastMessages[receiverId]?.id == tempId) {
+      newLastMessages[receiverId] = updated;
+    }
+
+    emit(state.copyWith(
+      status: ChatStatus.loaded,
+      messages: messages,
+      lastMessages: newLastMessages,
+    ));
+
+    if (currentUserId.isNotEmpty) {
+      await _localStorage.replaceMessage(
+          currentUserId, receiverId, tempId, updated);
+      await _localStorage.saveConversations(
+          currentUserId, state.conversations, newLastMessages);
+    }
+  }
+
+  /// Marks one optimistic bubble failed without disturbing the rest of the
+  /// conversation. The bubble keeps its local preview and gains a retry
+  /// affordance; [reason] is shown once via snackbar.
+  Future<void> _markSendFailed(
+    Emitter<ChatState> emit, {
+    required String currentUserId,
+    required String receiverId,
+    required String tempId,
+    required String reason,
+  }) async {
+    await _updateTempBubble(
+      emit,
+      currentUserId: currentUserId,
+      receiverId: receiverId,
+      tempId: tempId,
+      update: (m) => m.copyWith(status: 'failed'),
+    );
+    emit(state.copyWith(errorMessage: reason));
+  }
+
+  Future<void> _onChatClearError(
+    ChatClearError event,
+    Emitter<ChatState> emit,
+  ) async {
+    if (state.errorMessage == null) return;
+    emit(state.copyWith(clearErrorMessage: true));
+  }
+
+  Future<void> _onChatRetrySend(
+    ChatRetrySend event,
+    Emitter<ChatState> emit,
+  ) async {
+    final matches = state.messages.where((m) => m.id == event.tempId);
+    if (matches.isEmpty) return;
+    final failed = matches.first;
+    final currentUserId = _wsService.currentUserId ?? '';
+    if (!failed.isFailed || failed.senderId != currentUserId) return;
+
+    if (!failed.isTextMessage) {
+      // Attachments re-run the whole pipeline from the original local file;
+      // the failed attempt's ciphertext is never replayed on the wire.
+      final path = failed.filePath;
+      if (path == null || !(await File(path).exists())) {
+        emit(state.copyWith(
+          status: ChatStatus.loaded,
+          errorMessage: 'The original file is gone — please pick it again.',
+        ));
+        return;
+      }
+    }
+
+    // Drop the failed bubble; the re-send renders a fresh optimistic one.
+    final messages =
+        state.messages.where((m) => m.id != event.tempId).toList();
+    final newLastMessages = Map<String, Message>.from(state.lastMessages);
+    newLastMessages.removeWhere((_, m) => m.id == event.tempId);
+    emit(state.copyWith(
+      status: ChatStatus.loaded,
+      messages: messages,
+      lastMessages: newLastMessages,
+    ));
+
+    if (failed.isTextMessage) {
+      add(ChatSendTextMessage(
+        receiverId: failed.receiverId,
+        content: failed.content,
+        replyToId: failed.replyToId,
+      ));
+    } else {
+      add(ChatSendFileMessage(
+        receiverId: failed.receiverId,
+        filePath: failed.filePath!,
+        messageType: failed.messageType,
+        replyToId: failed.replyToId,
       ));
     }
   }
@@ -651,6 +816,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   ) async {
     final currentUserId = _wsService.currentUserId ?? '';
     if (currentUserId.isEmpty || !_wsService.isConnected) return;
+
+    // Remember which bubble this dispatch belongs to so the ack swaps the
+    // exact one (not merely the oldest temp) when uploads overlap.
+    _pendingFileAck[event.fileUrl] = event.tempId;
 
     // Stage the envelope so our own history fetch resolves instead of
     // showing "Unable to decrypt media" (committed on message_sent).
@@ -690,8 +859,13 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
     final plaintext = E2eeService.instance
         .commitOwnPlaintext(server.id, server.receiverId);
+    // Prefer the exact bubble this ack belongs to (registered at dispatch);
+    // fall back to the oldest-temp scan for sends that predate the map.
+    final ackTempId = server.filePath == null
+        ? null
+        : _pendingFileAck.remove(server.filePath);
     await _swapTempWithServer(
-      tempId: null,
+      tempId: ackTempId,
       serverJson: event.serverMessage,
       plaintext: plaintext ?? '',
       currentUserId: currentUserId,
@@ -728,7 +902,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     var swappedId = tempId;
     if (swappedId == null) {
       for (final m in messages) {
-        if (m.id.startsWith('temp_') && m.receiverId == server.receiverId) {
+        // Failed bubbles keep their temp ids but were never sent — an ack
+        // must never swap one of those for an unrelated server message.
+        if (m.id.startsWith('temp_') &&
+            m.receiverId == server.receiverId &&
+            !m.isFailed) {
           swappedId = m.id;
           break;
         }
@@ -1062,6 +1240,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     Emitter<ChatState> emit,
   ) {
     _heldSends.clear();
+    _pendingFileAck.clear();
     emit(const ChatState());
   }
 

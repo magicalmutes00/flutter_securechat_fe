@@ -161,3 +161,22 @@ class ChatDeleteMessage extends ChatEvent {
 }
 
 class ChatReset extends ChatEvent {}
+
+/// Clears a shown [ChatState.errorMessage]. Dispatched by the UI right after
+/// displaying the snackbar so an identical follow-up error still triggers
+/// the listener's change guard and is never silently swallowed.
+class ChatClearError extends ChatEvent {
+  const ChatClearError();
+}
+
+/// Re-runs the send pipeline for a failed optimistic bubble ([Message.isFailed]).
+/// The bubble is dropped and a fresh optimistic send starts from the stored
+/// local file/content — the failed attempt is never replayed on the wire.
+class ChatRetrySend extends ChatEvent {
+  final String tempId;
+
+  const ChatRetrySend({required this.tempId});
+
+  @override
+  List<Object?> get props => [tempId];
+}
