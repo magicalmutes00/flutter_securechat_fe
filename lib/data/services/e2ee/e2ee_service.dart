@@ -87,6 +87,17 @@ class E2eeService {
     _pendingOwnPlaintext.putIfAbsent(receiverId, () => []).add(plaintext);
   }
 
+  /// Drops the most recently staged plaintext for [receiverId]. The send it
+  /// belonged to died before reaching the server, so no ack will ever
+  /// consume it — leaving it queued would misattribute the next ack's
+  /// plaintext to the wrong bubble.
+  void discardStagedPlaintext(String receiverId) {
+    final pending = _pendingOwnPlaintext[receiverId];
+    if (pending == null || pending.isEmpty) return;
+    pending.removeLast();
+    if (pending.isEmpty) _pendingOwnPlaintext.remove(receiverId);
+  }
+
   /// Commits the oldest staged plaintext for [receiverId] under
   /// [serverMessageId]. Returns the committed plaintext, or null when nothing
   /// was staged (e.g. the message was sent from another device).

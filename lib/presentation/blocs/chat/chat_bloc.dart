@@ -242,6 +242,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     if (pending.isEmpty) return;
 
     for (final message in pending) {
+      // Only text is ever queued: attachments use failed-bubble + manual
+      // retry, and a queued Signal envelope could not be safely replayed
+      // (the receiver's ratchet may already have moved past it). Anything
+      // else is dropped from the queue so it can never send as a broken
+      // envelope-less message.
+      if (message.messageType != AppConstants.messageTypeText) {
+        await _localStorage.removeFromOutbox(currentUserId, message.id);
+        continue;
+      }
       try {
         final encrypted = await E2eeService.instance.prepareOutgoingText(
           currentUserId: currentUserId,
@@ -487,23 +496,35 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       );
       final usesSignal = encrypted['encryption'] == 'signal';
 
+      // Prefer the socket; any transport failure (not connected, or the
+      // socket died mid-send) falls through to REST, then to the outbox.
+      // A staged envelope whose send died is discarded — its ack will never
+      // arrive, and leaving it queued would misattribute the next ack's
+      // plaintext to the wrong bubble.
+      var sentLive = false;
       if (_wsService.isConnected) {
-        // Stage now; the server id arrives via `message_sent` and the ack
-        // handler commits it (socket delivery preserves send order).
-        if (usesSignal) {
-          E2eeService.instance
-              .stageOwnPlaintext(event.receiverId, event.content);
+        try {
+          // Stage now; the server id arrives via `message_sent` and the ack
+          // handler commits it (socket delivery preserves send order).
+          if (usesSignal) {
+            E2eeService.instance
+                .stageOwnPlaintext(event.receiverId, event.content);
+          }
+          _wsService.sendMessage(
+            receiverId: event.receiverId,
+            messageType: AppConstants.messageTypeText,
+            content: usesSignal ? '' : event.content,
+            replyToId: event.replyToId,
+            encryption: encrypted['encryption'] as String? ?? 'none',
+            cipherType: encrypted['cipher_type'] as int?,
+            cipherBody: encrypted['cipher_body'] as String?,
+          );
+          sentLive = true;
+        } catch (_) {
+          E2eeService.instance.discardStagedPlaintext(event.receiverId);
         }
-        _wsService.sendMessage(
-          receiverId: event.receiverId,
-          messageType: AppConstants.messageTypeText,
-          content: usesSignal ? '' : event.content,
-          replyToId: event.replyToId,
-          encryption: encrypted['encryption'] as String? ?? 'none',
-          cipherType: encrypted['cipher_type'] as int?,
-          cipherBody: encrypted['cipher_body'] as String?,
-        );
-      } else {
+      }
+      if (!sentLive) {
         // Try the REST fallback; if the device is fully offline, queue the
         // message for delivery once the socket to the server reconnects.
         try {
@@ -871,28 +892,85 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     Emitter<ChatState> emit,
   ) async {
     final currentUserId = _wsService.currentUserId ?? '';
-    if (currentUserId.isEmpty || !_wsService.isConnected) return;
 
-    // Remember which bubble this dispatch belongs to so the ack swaps the
-    // exact one (not merely the oldest temp) when uploads overlap.
-    _pendingFileAck[event.fileUrl] = event.tempId;
+    // Prefer the socket; fall through to REST on any transport failure (not
+    // connected, or the socket died between upload and dispatch). A dispatch
+    // that never reaches the server must never leave a phantom 'sending'
+    // bubble behind.
+    if (currentUserId.isNotEmpty && _wsService.isConnected) {
+      // Remember which bubble this dispatch belongs to so the ack swaps the
+      // exact one (not merely the oldest temp) when uploads overlap.
+      _pendingFileAck[event.fileUrl] = event.tempId;
 
-    // Stage the envelope so our own history fetch resolves instead of
-    // showing "Unable to decrypt media" (committed on message_sent).
-    E2eeService.instance.stageOwnPlaintext(event.receiverId, event.envelopeJson);
-    _wsService.sendMessage(
-      receiverId: event.receiverId,
-      messageType: event.messageType,
-      content: '',
-      fileUrl: event.fileUrl,
-      fileName: event.fileName,
-      fileSize: event.fileSize,
-      mediaType: event.mediaType,
-      replyToId: event.replyToId,
-      encryption: event.encryption,
-      cipherType: event.cipherType,
-      cipherBody: event.cipherBody,
-    );
+      // Stage the envelope so our own history fetch resolves instead of
+      // showing "Unable to decrypt media" (committed on message_sent).
+      E2eeService.instance
+          .stageOwnPlaintext(event.receiverId, event.envelopeJson);
+      try {
+        _wsService.sendMessage(
+          receiverId: event.receiverId,
+          messageType: event.messageType,
+          content: '',
+          fileUrl: event.fileUrl,
+          fileName: event.fileName,
+          fileSize: event.fileSize,
+          mediaType: event.mediaType,
+          replyToId: event.replyToId,
+          encryption: event.encryption,
+          cipherType: event.cipherType,
+          cipherBody: event.cipherBody,
+        );
+        return;
+      } catch (_) {
+        // Lost the race: drop the registration and the staged envelope (its
+        // ack will never arrive) and try REST below.
+        _pendingFileAck.remove(event.fileUrl);
+        E2eeService.instance.discardStagedPlaintext(event.receiverId);
+      }
+    }
+
+    // Single REST delivery carrying the already-uploaded file and the fresh
+    // envelope. This is the one send, not a replay — and files are never
+    // queued: replaying a Signal envelope later risks an undecryptable
+    // duplicate on the receiver.
+    try {
+      final sent = await _apiClient.sendMessage({
+        'receiver_id': event.receiverId,
+        'message_type': event.messageType,
+        'content': '',
+        'file_url': event.fileUrl,
+        'file_name': event.fileName,
+        'file_size': event.fileSize,
+        'media_type': event.mediaType,
+        'reply_to_id': event.replyToId,
+        'encryption': event.encryption,
+        'cipher_type': event.cipherType,
+        'cipher_body': event.cipherBody,
+      });
+      final serverId = sent['id'] as String? ?? sent['_id'] as String?;
+      if (serverId != null && serverId.isNotEmpty) {
+        // Direct keying, like the text REST path — never the stage queue,
+        // whose FIFO order cannot survive transport interleaving.
+        E2eeService.instance.cacheOwnPlaintext(serverId, event.envelopeJson);
+      }
+      await _swapTempWithServer(
+        tempId: event.tempId,
+        serverJson: sent,
+        plaintext: event.envelopeJson,
+        currentUserId: currentUserId,
+        emit: emit,
+      );
+    } catch (e) {
+      // Fully offline (or the server refused): the bytes are already hosted,
+      // but nothing was sent. Failed bubble with retry — never auto-queued.
+      await _markSendFailed(
+        emit,
+        currentUserId: currentUserId,
+        receiverId: event.receiverId,
+        tempId: event.tempId,
+        reason: sendFailureReason(e),
+      );
+    }
   }
 
   /// Commits the staged outgoing plaintext under the server id from a

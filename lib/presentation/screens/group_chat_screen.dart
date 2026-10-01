@@ -193,25 +193,61 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _messageController.clear();
     final replyTarget = _replyingTo;
     if (replyTarget != null) setState(() => _replyingTo = null);
+    await _sendGroupContent(content, replyTarget);
+  }
+
+  /// Re-runs the group send pipeline for a failed bubble. The failed attempt
+  /// is dropped and a fresh optimistic bubble starts — nothing is replayed.
+  Future<void> _retryGroupMessage(Message failed) async {
+    if (failed.senderId != _currentUserId) return;
+    setState(() => _messages.removeWhere((m) => m.id == failed.id));
+    Message? target;
+    if (failed.replyToId != null) {
+      for (final m in _messages) {
+        if (m.id == failed.replyToId) {
+          target = m;
+          break;
+        }
+      }
+    }
+    await _sendGroupContent(failed.content, target);
+  }
+
+  Future<void> _sendGroupContent(String content, Message? replyTarget) async {
+    final me = _currentUserId;
+    if (me == null) return;
 
     final tempMessage = Message(
       id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
-      senderId: _currentUserId!,
+      senderId: me,
       receiverId: widget.group.id,
       replyToId: replyTarget?.id,
       groupId: widget.group.id,
       messageType: 'text',
       content: content,
-      status: 'sent',
+      status: 'sending',
       createdAt: DateTime.now(),
     );
+    if (!mounted) return;
     setState(() => _messages.add(tempMessage));
     _scrollToLatest();
+
+    void markFailed(String reason) {
+      if (!mounted) return;
+      setState(() {
+        final idx = _messages.indexWhere((m) => m.id == tempMessage.id);
+        if (idx != -1) {
+          _messages[idx] = _messages[idx].copyWith(status: 'failed');
+        }
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(reason)));
+    }
 
     Map<String, dynamic> crypto;
     try {
       crypto = await E2eeService.instance.prepareOutgoingGroupText(
-        currentUserId: _currentUserId!,
+        currentUserId: me,
         groupId: widget.group.id,
         plaintext: content,
       );
@@ -219,7 +255,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       // Encryption failed: nothing was sent. Remove the optimistic bubble
       // and explain why instead of silently sending plaintext.
       if (!mounted) return;
-      setState(() => _messages.remove(tempMessage));
+      setState(() => _messages.removeWhere((m) => m.id == tempMessage.id));
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not secure that message: ${e.message}')),
       );
@@ -227,22 +263,43 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     final usesSignal = crypto['encryption'] == 'sgkey';
 
-    // Temp ids are meaningless to the server (and this screen has no ack/swap
-    // path to resolve them later), so a reply to a still-sending bubble keeps
-    // its link locally only; the server row carries no link in that race.
-    final wireReplyId = replyTarget?.id;
-    _wsService.sendGroupMessage(
-      groupId: widget.group.id,
-      messageType: 'text',
-      content: usesSignal ? '' : content,
-      replyToId: wireReplyId != null && wireReplyId.startsWith('temp_')
-          ? null
-          : wireReplyId,
-      encryption: crypto['encryption'] as String? ?? 'none',
-      cipherType: crypto['cipher_type'] as int?,
-      cipherBody: crypto['cipher_body'] as String?,
-      distribution: crypto['distribution'] as String?,
-    );
+    // Groups have no ack path and no REST send: a dead socket must mark the
+    // bubble failed (retryable) instead of leaving a phantom 'sent' bubble.
+    const offlineReason = 'No connection — the message was not sent. '
+        'Try again when you are back online.';
+    if (!_wsService.isConnected) {
+      markFailed(offlineReason);
+      return;
+    }
+    try {
+      // Temp ids are meaningless to the server (and this screen has no
+      // ack/swap path to resolve them later), so a reply to a still-sending
+      // bubble keeps its link locally only; the server row carries no link
+      // in that race.
+      final wireReplyId = replyTarget?.id;
+      _wsService.sendGroupMessage(
+        groupId: widget.group.id,
+        messageType: 'text',
+        content: usesSignal ? '' : content,
+        replyToId: wireReplyId != null && wireReplyId.startsWith('temp_')
+            ? null
+            : wireReplyId,
+        encryption: crypto['encryption'] as String? ?? 'none',
+        cipherType: crypto['cipher_type'] as int?,
+        cipherBody: crypto['cipher_body'] as String?,
+        distribution: crypto['distribution'] as String?,
+      );
+    } catch (_) {
+      // Socket died mid-send.
+      markFailed(offlineReason);
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      final idx = _messages.indexWhere((m) => m.id == tempMessage.id);
+      if (idx != -1) _messages[idx] = _messages[idx].copyWith(status: 'sent');
+    });
   }
 
   void _onTypingChanged(String value) {
@@ -448,6 +505,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                 onTapQuote:
                     quoted == null ? null : () => _jumpToQuoted(quoted.id),
                 isHighlighted: _highlightedId == message.id,
+                // Failed own-bubbles re-run the send pipeline on tap.
+                onRetry: message.isFailed && isMe
+                    ? () => _retryGroupMessage(message)
+                    : null,
               ),
             ],
           ),
