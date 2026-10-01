@@ -40,7 +40,8 @@ class ApiClient {
               final response = await _dio.fetch(error.requestOptions);
               return handler.resolve(response);
             } catch (e) {
-              await clearTokens();
+              // The refresh succeeded, so the session is alive — a failed
+              // retry is a request-level problem, never a reason to sign out.
               return handler.reject(error);
             }
           }
@@ -49,6 +50,18 @@ class ApiClient {
       },
     ));
   }
+
+  /// A bare client without interceptors, used only for token refresh so a
+  /// rejected refresh cannot recurse back into this interceptor.
+  Dio _bareDio() => Dio(BaseOptions(
+        baseUrl: AppConstants.baseUrl,
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      ));
 
   Future<bool> _refreshToken() async {
     try {
@@ -59,7 +72,7 @@ class ApiClient {
         return false;
       }
 
-      final response = await _dio.post(
+      final response = await _bareDio().post(
         '/api/auth/public/refresh-token',
         data: {'refresh_token': refreshToken},
       );
@@ -76,9 +89,18 @@ class ApiClient {
         return true;
       }
       return false;
-    } catch (e) {
-      // Clear tokens on refresh failure to prevent stuck auth state
-      await clearTokens();
+    } on DioException catch (e) {
+      // Only wipe the session when the server explicitly rejects the refresh
+      // token (rotated/expired/revoked). A missing response means offline or
+      // server down — the stored tokens stay valid for a later retry, so the
+      // user is NOT signed out by a network blip.
+      if (e.response != null &&
+          (e.response!.statusCode == 400 || e.response!.statusCode == 401)) {
+        await clearTokens();
+      }
+      return false;
+    } catch (_) {
+      // Transport failure — keep tokens for a later retry.
       return false;
     }
   }

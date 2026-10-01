@@ -1,7 +1,10 @@
+import 'dart:convert';
+
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuthException;
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
 import '../../../data/services/media_cache_service.dart';
@@ -32,6 +35,43 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<AuthAvatarUploadRequested>(_onAuthAvatarUploadRequested);
   }
 
+  /// Last-known profile, so a cold start without connectivity can still
+  /// open the app (offline with cached conversations) instead of forcing a
+  /// login. Refreshed on every successful online auth check.
+  static const String _cachedProfileKey = 'securechat.cached_profile';
+
+  Future<void> _cacheProfile(User user) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_cachedProfileKey, jsonEncode(user.toJson()));
+    } catch (_) {
+      // Best-effort only.
+    }
+  }
+
+  Future<User?> _cachedProfile() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_cachedProfileKey);
+      if (raw == null) return null;
+      final user = User.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+      return user.id.isEmpty ? null : user;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _connectWsBestEffort(String userId) async {
+    _wsService.setCurrentUserId(userId);
+    try {
+      await _wsService.connect();
+    } catch (e) {
+      // Offline or server down: the socket's own reconnect loop picks it up
+      // later. Never fail authentication because of the socket.
+      debugPrint('WS connect deferred: $e');
+    }
+  }
+
   Future<void> _onAuthCheckRequested(
     AuthCheckRequested event,
     Emitter<AuthState> emit,
@@ -43,28 +83,58 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
 
     try {
       final token = await _apiClient.getAccessToken();
-      if (token != null) {
+      if (token == null) {
+        emit(state.copyWith(
+          status: AuthStatus.unauthenticated,
+          errorMessage: null,
+        ));
+        return;
+      }
+
+      try {
+        // The interceptor transparently refreshes an expired access token.
         final profileData = await _apiClient.getProfile();
         final user = User.fromJson(profileData);
-
-        _wsService.setCurrentUserId(user.id);
-        await _wsService.connect();
+        await _cacheProfile(user);
+        await _connectWsBestEffort(user.id);
 
         emit(state.copyWith(
           status: AuthStatus.authenticated,
           user: user,
           errorMessage: null,
         ));
-      } else {
+      } catch (_) {
+        // Either the session is truly dead (the interceptor already wiped
+        // rejected tokens) or the server is unreachable. Only sign out in
+        // the first case — detected by tokens being gone. Otherwise stay
+        // signed in offline with the cached profile.
+        final stillHaveTokens = await _apiClient.getAccessToken() != null;
+        if (!stillHaveTokens) {
+          emit(state.copyWith(
+            status: AuthStatus.unauthenticated,
+            errorMessage: null,
+          ));
+          return;
+        }
+        final cached = await _cachedProfile();
+        if (cached == null) {
+          emit(state.copyWith(
+            status: AuthStatus.unauthenticated,
+            errorMessage: null,
+          ));
+          return;
+        }
+        await _connectWsBestEffort(cached.id);
         emit(state.copyWith(
-          status: AuthStatus.unauthenticated,
+          status: AuthStatus.authenticated,
+          user: cached,
           errorMessage: null,
         ));
       }
-    } catch (e) {
+    } catch (_) {
       emit(state.copyWith(
         status: AuthStatus.unauthenticated,
-        errorMessage: e.toString(),
+        errorMessage: null,
       ));
     }
   }
@@ -374,6 +444,7 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     );
 
     final user = User.fromJson(result['user'] as Map<String, dynamic>);
+    await _cacheProfile(user);
 
     debugPrint('[AuthBloc] connecting WebSocket for user ${user.id}...');
     _wsService.setCurrentUserId(user.id);
@@ -435,6 +506,12 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     }
     // Cached media (images, avatars) must not survive logout either.
     await MediaCacheService().clear();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_cachedProfileKey);
+    } catch (_) {
+      // Best-effort only.
+    }
     emit(const AuthState(status: AuthStatus.unauthenticated));
   }
 
