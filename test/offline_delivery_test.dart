@@ -3,7 +3,18 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:secure_chat/core/constants/app_constants.dart';
 import 'package:secure_chat/data/models/message_model.dart';
-import 'package:secure_chat/data/services/e2ee/e2ee_service.dart';
+
+Message _textMessage({String id = 'msg-1', String content = 'hello'}) {
+  return Message(
+    id: id,
+    senderId: 'user-a',
+    receiverId: 'user-b',
+    messageType: AppConstants.messageTypeText,
+    content: content,
+    status: 'sending',
+    createdAt: DateTime.utc(2026, 1, 1),
+  );
+}
 
 Message _fileMessage() {
   return Message(
@@ -19,57 +30,18 @@ Message _fileMessage() {
 }
 
 void main() {
-  group('discardStagedPlaintext', () {
-    test('drops only the most recently staged envelope', () async {
-      final svc = E2eeService.instance;
-      svc.stageOwnPlaintext('peer-discard-1', 'A');
-      svc.stageOwnPlaintext('peer-discard-1', 'B');
-      svc.discardStagedPlaintext('peer-discard-1');
-      expect(
-        await svc.commitOwnPlaintext(
-          'srv-1',
-          'peer-discard-1',
-          currentUserId: 'user-a',
-        ),
-        'A',
-      );
-    });
-
-    test('empty-queue discard and commit are safe no-ops', () async {
-      final svc = E2eeService.instance;
-      svc.discardStagedPlaintext('peer-discard-2');
-      expect(
-        await svc.commitOwnPlaintext(
-          'srv-2',
-          'peer-discard-2',
-          currentUserId: 'user-a',
-        ),
-        isNull,
-      );
-    });
-
-    test('a dead send cannot poison the next ack', () async {
-      // A is staged, its socket dies (discarded), B is staged, B's ack
-      // arrives: it must commit B, not the dead A.
-      final svc = E2eeService.instance;
-      svc.stageOwnPlaintext('peer-discard-3', 'dead-envelope');
-      svc.discardStagedPlaintext('peer-discard-3');
-      svc.stageOwnPlaintext('peer-discard-3', 'live-envelope');
-      expect(
-        await svc.commitOwnPlaintext(
-          'srv-3',
-          'peer-discard-3',
-          currentUserId: 'user-a',
-        ),
-        'live-envelope',
-      );
-    });
-  });
-
   group('outbox text-only contract', () {
+    test('queued text keeps content through JSON', () {
+      final restored = Message.fromJson(
+        jsonDecode(jsonEncode(_textMessage().toJson())) as Map<String, dynamic>,
+      );
+      expect(restored.messageType, AppConstants.messageTypeText);
+      expect(restored.content, 'hello');
+    });
+
     test('queued entries keep their type through JSON', () {
-      // _flushOutbox reads messageType off deserialized outbox entries to
-      // route text vs attachments; the type must survive the round trip.
+      // The outbox flush reads messageType off deserialized entries to route
+      // text vs attachments; the type must survive the round trip.
       final restored = Message.fromJson(
         jsonDecode(jsonEncode(_fileMessage().toJson())) as Map<String, dynamic>,
       );
@@ -78,6 +50,15 @@ void main() {
         restored.messageType == AppConstants.messageTypeText,
         isFalse,
       );
+    });
+
+    test('outbox payloads never carry crypto wire fields', () {
+      final json =
+          jsonDecode(jsonEncode(_textMessage().toJson())) as Map<String, dynamic>;
+      expect(json.containsKey('cipher_type'), isFalse);
+      expect(json.containsKey('cipher_body'), isFalse);
+      expect(json.containsKey('distribution'), isFalse);
+      expect(json.containsKey('encryption'), isFalse);
     });
   });
 }

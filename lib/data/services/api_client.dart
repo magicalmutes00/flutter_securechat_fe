@@ -563,7 +563,7 @@ class ApiClient {
     }
   }
 
-  /// Downloads a file (e.g. an encrypted media blob) with authentication.
+  /// Downloads a file (e.g. a chat attachment) with authentication.
   /// Returns the raw bytes.
   Future<List<int>> downloadFileBytes(String url) async {
     final response = await _dio.get<List<int>>(
@@ -571,55 +571,6 @@ class ApiClient {
       options: Options(responseType: ResponseType.bytes),
     );
     return response.data ?? const [];
-  }
-
-  // E2EE Key Bundle Methods
-  Future<Map<String, dynamic>> uploadKeyBundle({
-    required String deviceId,
-    required int registrationId,
-    required String identityKeyPublic,
-    required int signedPrekeyId,
-    required String signedPrekeyPublic,
-    required String signedPrekeySignature,
-    required List<String> oneTimePrekeys,
-  }) async {
-    final response = await _dio.put(
-      '/api/keys/upload',
-      data: {
-        'device_id': deviceId,
-        'registration_id': registrationId,
-        'identity_key_public': identityKeyPublic,
-        'signed_prekey_id': signedPrekeyId,
-        'signed_prekey_public': signedPrekeyPublic,
-        'signed_prekey_signature': signedPrekeySignature,
-        'one_time_prekeys': oneTimePrekeys,
-      },
-    );
-    return response.data as Map<String, dynamic>;
-  }
-
-  Future<Map<String, dynamic>> addOneTimePrekeys({
-    required String deviceId,
-    required List<String> oneTimePrekeys,
-  }) async {
-    final response = await _dio.post(
-      '/api/keys/one-time-prekeys',
-      data: {'device_id': deviceId, 'one_time_prekeys': oneTimePrekeys},
-    );
-    return response.data as Map<String, dynamic>;
-  }
-
-  Future<Map<String, dynamic>?> getKeyBundle(String userId) async {
-    final response = await _dio.get('/api/keys/bundle/$userId');
-    return response.data as Map<String, dynamic>;
-  }
-
-  Future<Map<String, dynamic>> getKeyBundleStatus(String deviceId) async {
-    final response = await _dio.get(
-      '/api/keys/has-bundle',
-      queryParameters: {'device_id': deviceId},
-    );
-    return response.data as Map<String, dynamic>;
   }
 
   // Real-time communication (WebRTC) methods

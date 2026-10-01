@@ -13,7 +13,7 @@ import '../../data/services/media_cache_service.dart';
 /// `Image.network` cannot be used for these: the route requires a Bearer
 /// token and answers with a redirect to a signed Cloudinary URL. This widget
 /// downloads through [ApiClient] (which attaches the token), caches the
-/// decrypted bytes via [MediaCacheService], and renders from memory.
+/// downloaded bytes via [MediaCacheService], and renders from memory.
 class AuthImage extends StatefulWidget {
   const AuthImage({
     super.key,

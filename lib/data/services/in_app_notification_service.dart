@@ -11,35 +11,22 @@ import '../models/group_model.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'api_client.dart';
-import 'e2ee/e2ee_service.dart';
 import 'local_storage_service.dart';
 import 'notification_service.dart';
 import 'rtc/incoming_call_router.dart';
 import 'websocket_service.dart';
 
-/// Whether a session-reset request may go out now, given the last one went
-/// out at [lastRequest] (null when never). Pure so the throttle policy is
-/// unit-testable.
-bool shouldRequestSessionReset(
-  DateTime? lastRequest,
-  DateTime now, {
-  Duration minInterval = const Duration(minutes: 5),
-}) {
-  if (lastRequest == null) return true;
-  return now.difference(lastRequest) >= minInterval;
-}
-
 /// Central incoming-message notification hub.
 ///
 /// Sits between the raw WebSocket streams and the UI:
-///  - decrypts every incoming message exactly once and re-broadcasts it on
-///    [decryptedMessageStream] / [decryptedGroupMessageStream] (ChatBloc and
-///    GroupChatScreen consume these instead of the raw streams — decrypting
-///    the same Double-Ratchet ciphertext twice would fail),
+///  - forwards incoming plaintext messages on [messageStream] /
+///    [groupMessageStream] (ChatBloc and GroupChatScreen consume these),
 ///  - while the app is in the foreground, surfaces an in-app banner toast at
 ///    the top of the screen for messages arriving in other conversations
 ///    (tapping it opens the chat),
 ///  - while the app is backgrounded, posts a system notification instead.
+///
+/// Banner and notification bodies show the actual message text.
 class InAppNotificationService with WidgetsBindingObserver {
   static final InAppNotificationService instance = InAppNotificationService._();
 
@@ -52,24 +39,15 @@ class InAppNotificationService with WidgetsBindingObserver {
   StreamSubscription<Message>? _messageSub;
   StreamSubscription<Message>? _groupMessageSub;
   StreamSubscription<NotificationPayload>? _notificationTapSub;
-  StreamSubscription<Map<String, dynamic>>? _resetSessionSub;
 
-  /// Last session-reset request per peer: throttles the control frames so a
-  /// flood of broken messages (or a malicious peer) can't turn recovery
-  /// into a storm.
-  final Map<String, DateTime> _lastResetRequest = {};
+  final _messageController = StreamController<Message>.broadcast();
+  final _groupMessageController = StreamController<Message>.broadcast();
 
-  final _decryptedMessageController = StreamController<Message>.broadcast();
-  final _decryptedGroupMessageController =
-      StreamController<Message>.broadcast();
+  /// 1:1 messages, plaintext.
+  Stream<Message> get messageStream => _messageController.stream;
 
-  /// 1:1 messages, already decrypted.
-  Stream<Message> get decryptedMessageStream =>
-      _decryptedMessageController.stream;
-
-  /// Group messages, already decrypted.
-  Stream<Message> get decryptedGroupMessageStream =>
-      _decryptedGroupMessageController.stream;
+  /// Group messages, plaintext.
+  Stream<Message> get groupMessageStream => _groupMessageController.stream;
 
   bool _appInForeground = true;
   bool _initialized = false;
@@ -98,15 +76,6 @@ class InAppNotificationService with WidgetsBindingObserver {
       (message) => unawaited(_handleIncoming(message, isGroup: true)),
     );
 
-    // Peers asking us to drop our session with them (their side cannot
-    // decrypt our messages). Our next send re-establishes fresh.
-    _resetSessionSub = _ws.resetSessionStream.listen((data) {
-      final peerId = data['sender_id'] as String?;
-      final me = _ws.currentUserId;
-      if (peerId == null || me == null || peerId == me) return;
-      unawaited(E2eeService.instance.resetSessionFor(me, peerId));
-    });
-
     // Tapping a system notification opens the originating conversation.
     _notificationTapSub =
         _notifications.notificationStream.listen(_onTapPayload);
@@ -124,52 +93,13 @@ class InAppNotificationService with WidgetsBindingObserver {
   }
 
   Future<void> _handleIncoming(Message raw, {required bool isGroup}) async {
-    var message = raw;
+    final message = raw;
     final me = _ws.currentUserId;
 
-    // Decrypt here so downstream consumers (ChatBloc, GroupChatScreen)
-    // never touch ciphertext twice.
-    try {
-      if (isGroup) {
-        if (message.encryption == 'sgkey' &&
-            message.cipherBody != null &&
-            message.groupId != null &&
-            me != null) {
-          // Memoized: the same sender-key ciphertext must never be decrypted
-          // twice (live socket + history fetch), so go through the shared
-          // cache instead of decrypting raw here.
-          message = await E2eeService.instance.decryptGroupMessage(
-            message,
-            currentUserId: me,
-          );
-        }
-        _decryptedGroupMessageController.add(message);
-      } else {
-        if (me != null) {
-          final wasEncrypted = message.encryption == 'signal';
-          message = await E2eeService.instance.decryptMessage(
-            message,
-            currentUserId: me,
-            isLiveDelivery: true,
-          );
-          // The peer's session with us is stale — and they see no error,
-          // because their encrypt succeeds locally. Ask them to drop it so
-          // their next send re-establishes fresh; throttled per peer.
-          // Live socket only (this handler never runs for history loads).
-          if (wasEncrypted &&
-              message.content == Message.decryptionFailedContent &&
-              message.senderId != me) {
-            _requestSessionReset(message.senderId);
-          }
-        }
-        _decryptedMessageController.add(message);
-      }
-    } catch (_) {
-      // Decryption failed: hand the ciphertext on so the chat UI can render
-      // its "unable to decrypt" placeholder.
-      (isGroup ? _decryptedGroupMessageController : _decryptedMessageController)
-          .add(message);
-      return;
+    if (isGroup) {
+      _groupMessageController.add(message);
+    } else {
+      _messageController.add(message);
     }
 
     if (me == null || message.senderId == me) return;
@@ -346,28 +276,13 @@ class InAppNotificationService with WidgetsBindingObserver {
     }
   }
 
-  /// Asks [peerId] to drop their session with us, at most once per
-  /// [minInterval]. Throttling keeps a flood of broken messages (or a
-  /// malicious peer) from turning recovery into a control-frame storm.
-  void _requestSessionReset(String peerId) {
-    if (!shouldRequestSessionReset(
-      _lastResetRequest[peerId],
-      DateTime.now(),
-    )) {
-      return;
-    }
-    _lastResetRequest[peerId] = DateTime.now();
-    _ws.sendResetSession(peerId);
-  }
-
   void dispose() {
     _dismissBanner();
     _messageSub?.cancel();
     _groupMessageSub?.cancel();
     _notificationTapSub?.cancel();
-    _resetSessionSub?.cancel();
-    _decryptedMessageController.close();
-    _decryptedGroupMessageController.close();
+    _messageController.close();
+    _groupMessageController.close();
     WidgetsBinding.instance.removeObserver(this);
   }
 }
@@ -457,7 +372,7 @@ class _NotificationBannerCardState extends State<_NotificationBannerCard>
                         shape: BoxShape.circle,
                       ),
                       child: const Icon(
-                        Icons.lock_outline,
+                        Icons.chat_bubble_outline,
                         color: Colors.white,
                         size: 20,
                       ),

@@ -253,7 +253,7 @@ class _ChatsTabState extends State<ChatsTab> {
         return EmptyState(
           icon: Icons.chat_bubble_outline,
           title: 'No conversations yet',
-          body: 'Find a friend and start your first secure chat.',
+          body: 'Find a friend and start your first chat.',
           actionLabel: 'Start a chat',
           onAction: _showNewConversationSheet,
         );

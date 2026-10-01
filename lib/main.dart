@@ -23,6 +23,9 @@ void main() async {
   try {
     await Hive.initFlutter();
     await LocalStorageService().init();
+    // Best-effort migration: drop leftover pre-removal encryption state
+    // without touching cached conversations, accounts, media or settings.
+    await LocalStorageService().purgeLegacyE2eeState();
   } catch (e) {
     debugPrint('Failed to initialize storage: $e');
   }
@@ -36,7 +39,7 @@ void main() async {
   final notificationService = NotificationService();
   await notificationService.initialize();
 
-  // Incoming-message hub: decrypts once, re-broadcasts to the UI, and shows
+  // Incoming-message hub: forwards plaintext messages to the UI and shows
   // in-app banners (foreground) or system notifications (background).
   InAppNotificationService.instance.init();
 

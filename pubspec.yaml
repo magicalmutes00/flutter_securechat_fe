@@ -48,8 +48,7 @@ dependencies:
   # Security
   flutter_secure_storage: ^9.0.0
   crypto: ^3.0.3
-  convert: ^3.1.2
-  fixnum: ^1.1.0
+  # AES-GCM for local at-rest media cache protection only (not E2EE).
   pointycastle: ^4.0.0
 
   # Contacts
@@ -59,7 +58,6 @@ dependencies:
 
   # Notifications
   flutter_local_notifications: ^18.0.1
-  libsignal_protocol_dart: ^0.8.2
 
   # WebRTC (voice/video calls)
   flutter_webrtc: ^1.6.0

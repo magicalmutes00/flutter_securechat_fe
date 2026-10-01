@@ -77,8 +77,8 @@ class ChatUpdateMessageStatus extends ChatEvent {
 }
 
 /// The server acknowledged one of our WebSocket sends (`message_sent` carries
-/// the full stored message). Commits the staged outgoing plaintext under the
-/// server id and swaps the optimistic temp bubble for the real message.
+/// the full stored message). Swaps the optimistic temp bubble for the real
+/// message.
 class ChatServerMessageAcked extends ChatEvent {
   final Map<String, dynamic> serverMessage;
 

@@ -483,11 +483,11 @@ class _BrandHeader extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.lock_outline,
+            Icon(Icons.chat_bubble_outline,
                 size: 14, color: colors.onSurfaceVariant),
             const SizedBox(width: AppSpacing.xs),
             Text(
-              'End-to-end encrypted messaging',
+              'Simple, fast messaging',
               style: context.text.bodyMedium?.copyWith(
                 color: colors.onSurfaceVariant,
               ),

@@ -134,8 +134,7 @@ class QuoteStrip extends StatelessWidget {
 }
 
 /// One-line preview of a message for quote strips. Purely presentational —
-/// resolved from an already-decrypted [Message], never re-fetched (a Signal
-/// ciphertext can only be decrypted once).
+/// resolved from an already-loaded [Message], never re-fetched.
 class ReplySnippet {
   final String text;
   final IconData? icon;

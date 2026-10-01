@@ -20,7 +20,6 @@ import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
 import '../widgets/auth_image.dart';
 import '../widgets/message_bubble.dart';
-import '../widgets/security_code_sheet.dart';
 import '../widgets/ui/ui.dart';
 import 'call_screen.dart';
 
@@ -366,17 +365,6 @@ class _ChatScreenState extends State<ChatScreen> {
             tooltip: 'Search in conversation',
             onPressed: _showSearchDialog,
           ),
-          IconButton(
-            icon: const Icon(Icons.shield_outlined),
-            tooltip: 'View safety number',
-            onPressed: () {
-              showModalBottomSheet(
-                context: context,
-                builder: (context) =>
-                    SecurityCodeSheet(peerUserId: widget.user.id),
-              );
-            },
-          ),
         ],
       ),
       body: BlocListener<ChatBloc, ChatState>(
@@ -415,7 +403,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       icon: Icons.waving_hand_outlined,
                       title: 'No messages yet',
                       body:
-                          'Say hello to $_chatTitle — messages are end-to-end encrypted.',
+                          'Say hello to $_chatTitle.',
                     );
                   }
 
@@ -509,8 +497,8 @@ class _ChatScreenState extends State<ChatScreen> {
     final ids = messages.map((m) => m.id).toSet();
     _messageKeys.removeWhere((id, _) => !ids.contains(id));
 
-    // Resolve reply targets from the already-decrypted messages in state —
-    // never re-fetch (a Signal ciphertext can only be decrypted once).
+    // Resolve reply targets from the loaded messages in state — never
+    // re-fetch.
     final byId = {for (final m in messages) m.id: m};
     final me = WebSocketService().currentUserId;
 

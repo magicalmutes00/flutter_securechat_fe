@@ -306,12 +306,6 @@ class _ProfileTabState extends State<ProfileTab> {
                 enabled: false,
               ),
               const _SettingsRow(
-                icon: Icons.security_outlined,
-                title: 'Security',
-                subtitle: 'Safety numbers and verification',
-                enabled: false,
-              ),
-              const _SettingsRow(
                 icon: Icons.storage_outlined,
                 title: 'Storage',
                 subtitle: 'Media and cache management',
@@ -327,7 +321,7 @@ class _ProfileTabState extends State<ProfileTab> {
               const _SettingsRow(
                 icon: Icons.info_outline,
                 title: 'SecureChat',
-                subtitle: 'Version 1.0.0 · end-to-end encrypted',
+                subtitle: 'Version 1.0.0',
               ),
               const SizedBox(height: AppSpacing.lg),
               AppButton.danger(

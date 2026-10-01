@@ -7,15 +7,16 @@ import 'package:crypto/crypto.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'at_rest_key.dart';
-import 'e2ee/media_crypto.dart';
+import 'at_rest_media_crypto.dart';
 
-/// Two-tier cache for media blobs (avatars, status images, decrypted chat
-/// attachments).
+/// Two-tier cache for media blobs (avatars, status images, chat attachments).
 ///
 /// - Tier 1: in-memory map for the current session.
 /// - Tier 2: files in the app's **cache** directory, encrypted at rest with
 ///   the per-installation [AtRestKey] (AES-256-GCM, `nonce || ciphertext`
-///   layout). Cached plaintext never touches disk unencrypted.
+///   layout via [AtRestMediaCrypto]). This is local storage protection only,
+///   not end-to-end encryption: network traffic carries normal plaintext
+///   uploads/downloads. Cached plaintext never touches disk unencrypted.
 ///
 /// Keys are caller-defined (message file path, avatar URL, ...); they are
 /// hashed to stable file names. The OS may reclaim the cache directory at any
@@ -34,10 +35,6 @@ class MediaCacheService {
   List<int>? _keyBytes;
 
   /// Cache generation: bumped when the meaning of a cached entry changes.
-  /// v1 entries may hold UNDECRYPTED ciphertext (cached by the broken
-  /// sender path that skipped decryption without a media key) — serving
-  /// them renders nothing, forever, since cache hits bypass decrypt. v2
-  /// entries predate fail-closed media loading and can have the same flaw.
   static const _generation = 'v3';
 
   Future<Directory> _cacheDir() async {
@@ -83,12 +80,12 @@ class MediaCacheService {
       if (!await file.exists()) return null;
 
       final blob = await file.readAsBytes();
-      if (blob.length <= MediaCrypto.nonceLength) return null;
+      if (blob.length <= AtRestMediaCrypto.nonceLength) return null;
 
       final keyBytes = await _key();
-      final nonce = Uint8List.sublistView(blob, 0, MediaCrypto.nonceLength);
-      final ciphertext = Uint8List.sublistView(blob, MediaCrypto.nonceLength);
-      final plain = MediaCrypto.decrypt(
+      final nonce = Uint8List.sublistView(blob, 0, AtRestMediaCrypto.nonceLength);
+      final ciphertext = Uint8List.sublistView(blob, AtRestMediaCrypto.nonceLength);
+      final plain = AtRestMediaCrypto.decrypt(
         Uint8List.fromList(keyBytes),
         Uint8List.fromList(nonce),
         ciphertext,
@@ -108,11 +105,11 @@ class MediaCacheService {
   Future<void> write(String key, Uint8List bytes) async {
     try {
       final keyBytes = await _key();
-      final nonce = Uint8List(MediaCrypto.nonceLength);
+      final nonce = Uint8List(AtRestMediaCrypto.nonceLength);
       for (var i = 0; i < nonce.length; i++) {
         nonce[i] = _random.nextInt(256);
       }
-      final cipher = MediaCrypto.encrypt(
+      final cipher = AtRestMediaCrypto.encrypt(
         Uint8List.fromList(keyBytes),
         nonce,
         bytes,

@@ -1,7 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:secure_chat/data/models/message_model.dart';
 import 'package:secure_chat/data/services/api_client.dart';
-import 'package:secure_chat/data/services/e2ee/e2ee_service.dart';
 import 'package:secure_chat/presentation/blocs/chat/chat_bloc.dart';
 import 'package:secure_chat/presentation/blocs/chat/chat_event.dart';
 import 'package:secure_chat/presentation/blocs/chat/chat_state.dart';
@@ -82,39 +81,7 @@ void main() {
     });
   });
 
-  group('applyMediaEnvelope', () {
-    Message fileMessage() => Message(
-          id: 'srv-1',
-          senderId: 'user-a',
-          receiverId: 'user-b',
-          messageType: 'image',
-          content: '',
-          filePath: '/api/files/abc',
-          status: 'sent',
-          createdAt: DateTime.utc(2026, 1, 1),
-        );
-
-    test('populates the transient media key fields', () {
-      const envelope = '{"k":"a2V5","iv":"bm9uY2U=","text":""}';
-      final resolved = E2eeService.instance
-          .applyMediaEnvelope(fileMessage(), envelope);
-      expect(resolved.mediaKey, 'a2V5');
-      expect(resolved.mediaNonce, 'bm9uY2U=');
-      // The hosted path and everything else survive untouched.
-      expect(resolved.filePath, '/api/files/abc');
-      expect(resolved.id, 'srv-1');
-    });
-
-    test('garbage envelope leaves the message untouched, never throws', () {
-      final original = fileMessage();
-      final resolved =
-          E2eeService.instance.applyMediaEnvelope(original, 'not-json');
-      expect(resolved.mediaKey, isNull);
-      expect(resolved, original);
-    });
-  });
-
-  group('Message.isDecryptionFailure', () {
+  group('Message legacy notice', () {
     Message textMessage() => Message(
           id: 'm1',
           senderId: 'user-a',
@@ -125,41 +92,29 @@ void main() {
           createdAt: DateTime.utc(2026, 1, 1),
         );
 
-    test('matches both failure placeholders only', () {
+    test('legacy notice is stable truth', () {
       expect(
         textMessage()
-            .copyWith(
-              content: Message.decryptionFailedContent,
-              status: 'sent',
-            )
-            .isDecryptionFailure,
+            .copyWith(content: Message.legacyEncryptedNotice)
+            .isLegacyNotice,
         isTrue,
       );
-      expect(
-        textMessage()
-            .copyWith(content: Message.decryptionFailedMediaContent)
-            .isDecryptionFailure,
-        isTrue,
-      );
-      expect(textMessage().isDecryptionFailure, isFalse);
+      expect(textMessage().isLegacyNotice, isFalse);
     });
 
-    test('legacy pre-encryption notice is stable truth, not failure', () {
+    test('send states are not legacy notices', () {
+      expect(textMessage().copyWith(status: 'sending').isLegacyNotice,
+          isFalse);
       expect(
-        textMessage()
-            .copyWith(
-              content: '🔒 Encrypted message from before encryption was removed',
-            )
-            .isDecryptionFailure,
-        isFalse,
-      );
+          textMessage().copyWith(status: 'failed').isLegacyNotice, isFalse);
     });
 
-    test('send states are not decryption failures', () {
-      expect(textMessage().copyWith(status: 'sending').isDecryptionFailure,
-          isFalse);
-      expect(textMessage().copyWith(status: 'failed').isDecryptionFailure,
-          isFalse);
+    test('toJson never carries crypto wire fields', () {
+      final json = textMessage().toJson();
+      expect(json.containsKey('cipher_type'), isFalse);
+      expect(json.containsKey('cipher_body'), isFalse);
+      expect(json.containsKey('distribution'), isFalse);
+      expect(json.containsKey('encryption'), isFalse);
     });
   });
 
@@ -174,29 +129,20 @@ void main() {
           createdAt: DateTime.utc(2026, 1, 1),
         );
 
-    test('fresh good decrypt heals a stuck placeholder', () {
+    test('empty cached row is healed by incoming content', () {
       final healed = mergeHistoryMessage(
-        stored(content: Message.decryptionFailedContent),
+        stored(content: ''),
         stored(content: 'hello there'),
       );
       expect(healed.content, 'hello there');
-      expect(healed.isDecryptionFailure, isFalse);
     });
 
-    test('never replaces good rows with placeholders', () {
+    test('never replaces good rows with empty ones', () {
       final kept = mergeHistoryMessage(
         stored(content: 'hello there'),
-        stored(content: Message.decryptionFailedContent),
+        stored(content: ''),
       );
       expect(kept.content, 'hello there');
-    });
-
-    test('placeholder over placeholder keeps the existing row', () {
-      final kept = mergeHistoryMessage(
-        stored(content: Message.decryptionFailedContent),
-        stored(content: Message.decryptionFailedContent),
-      );
-      expect(kept.isDecryptionFailure, isTrue);
     });
 
     test('good over good keeps the existing row', () {
@@ -249,11 +195,6 @@ void main() {
         sendFailureReason(Exception('send timeout')),
         contains('No connection'),
       );
-    });
-
-    test('encryption failures surface their own message', () {
-      const e = E2eeEncryptionException('Attachment not sent: no session');
-      expect(sendFailureReason(e), 'Attachment not sent: no session');
     });
 
     test('anything else gets the generic retry wording', () {

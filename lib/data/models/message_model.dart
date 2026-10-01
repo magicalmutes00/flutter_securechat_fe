@@ -1,14 +1,10 @@
 import 'package:equatable/equatable.dart';
 
 class Message extends Equatable {
-  /// Bubble copy rendered when a received ciphertext cannot be decrypted.
-  /// Single source of truth: the decrypt path writes it, the receive path
-  /// reads it back to detect live decryption failures.
-  static const String decryptionFailedContent = '🔒 Unable to decrypt message';
-
-  /// Same, for a media key envelope that cannot be decrypted.
-  static const String decryptionFailedMediaContent =
-      '🔒 Unable to decrypt media';
+  /// Notice rendered for pre-removal messages that carry no readable content.
+  /// Historical marker only: new traffic is always plaintext.
+  static const String legacyEncryptedNotice =
+      '🔒 Encrypted message from before encryption was removed';
 
   final String id;
   final String senderId;
@@ -16,9 +12,8 @@ class Message extends Equatable {
   final String? groupId;
 
   // Reply target: id of the quoted message in the same conversation.
-  // Resolved client-side from already-decrypted messages; the server stores
-  // only this id (never a quoted-text snapshot) so it learns nothing about
-  // encrypted content.
+  // Resolved client-side from loaded messages; the server stores only this
+  // id (never a quoted-text snapshot).
   final String? replyToId;
   final String messageType;
   final String content;
@@ -29,21 +24,6 @@ class Message extends Equatable {
   final String status;
   final DateTime createdAt;
   final DateTime? updatedAt;
-
-  // E2EE: for encrypted messages `content` is empty and the ciphertext travels
-  // in these opaque fields. Local copies store the decrypted text.
-  final String encryption;
-  final int? cipherType;
-  final String? cipherBody;
-
-  // Group sender-key distribution message (first message to a member).
-  final String? distribution;
-
-  // Transient AES-256-GCM media keys, populated in-memory after decrypting the
-  // media envelope. They are never serialized with messages; after a restart
-  // they are restored from the separate encrypted durable plaintext store.
-  final String? mediaKey;
-  final String? mediaNonce;
 
   // Transient 0..1 upload progress for an in-flight optimistic send. Never
   // serialized: a reopened chat re-derives send state from the server, and
@@ -65,16 +45,18 @@ class Message extends Equatable {
     required this.status,
     required this.createdAt,
     this.updatedAt,
-    this.encryption = 'none',
-    this.cipherType,
-    this.cipherBody,
-    this.distribution,
-    this.mediaKey,
-    this.mediaNonce,
     this.uploadProgress,
   });
 
   factory Message.fromJson(Map<String, dynamic> json) {
+    final content = json['content'] as String? ?? '';
+    final legacyEncryption = json['encryption'] as String? ?? 'none';
+    // Historical compatibility: old rows carry an encryption marker instead
+    // of content. Show the legacy notice instead of an empty bubble. The
+    // marker itself is not retained: there is no decryption workflow left.
+    final displayContent = (content.isEmpty && legacyEncryption != 'none')
+        ? legacyEncryptedNotice
+        : content;
     return Message(
       id: json['id'] as String? ?? json['_id'] as String? ?? '',
       senderId: json['sender_id'] as String? ?? '',
@@ -82,7 +64,7 @@ class Message extends Equatable {
       groupId: json['group_id'] as String?,
       replyToId: json['reply_to_id'] as String?,
       messageType: json['message_type'] as String? ?? 'text',
-      content: json['content'] as String? ?? '',
+      content: displayContent,
       filePath: json['file_path'] as String?,
       fileName: json['file_name'] as String?,
       fileSize: json['file_size'] as int?,
@@ -96,10 +78,6 @@ class Message extends Equatable {
       updatedAt: json['updated_at'] != null
           ? DateTime.parse(json['updated_at'] as String).toLocal()
           : null,
-      encryption: json['encryption'] as String? ?? 'none',
-      cipherType: json['cipher_type'] as int?,
-      cipherBody: json['cipher_body'] as String?,
-      distribution: json['distribution'] as String?,
     );
   }
 
@@ -119,10 +97,6 @@ class Message extends Equatable {
       'status': status,
       'created_at': createdAt.toIso8601String(),
       'updated_at': updatedAt?.toIso8601String(),
-      'encryption': encryption,
-      'cipher_type': cipherType,
-      'cipher_body': cipherBody,
-      'distribution': distribution,
     };
   }
 
@@ -141,12 +115,6 @@ class Message extends Equatable {
     String? status,
     DateTime? createdAt,
     DateTime? updatedAt,
-    String? encryption,
-    int? cipherType,
-    String? cipherBody,
-    String? distribution,
-    String? mediaKey,
-    String? mediaNonce,
     double? uploadProgress,
 
     /// copyWith can't distinguish "no change" from "set to null", so
@@ -169,12 +137,6 @@ class Message extends Equatable {
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-      encryption: encryption ?? this.encryption,
-      cipherType: cipherType ?? this.cipherType,
-      cipherBody: cipherBody ?? this.cipherBody,
-      distribution: distribution ?? this.distribution,
-      mediaKey: mediaKey ?? this.mediaKey,
-      mediaNonce: mediaNonce ?? this.mediaNonce,
       uploadProgress:
           clearUploadProgress ? null : (uploadProgress ?? this.uploadProgress),
     );
@@ -190,20 +152,14 @@ class Message extends Equatable {
   bool get isRead => status == 'read';
 
   /// Local-only send states for optimistic bubbles: 'sending' while
-  /// encryption/upload is in flight, 'failed' when the send died. A failure
+  /// upload is in flight, 'failed' when the send died. A failure
   /// marks only this bubble — never the whole conversation.
   bool get isSending => status == 'sending';
   bool get isFailed => status == 'failed';
 
-  /// Whether this bubble is a decryption-failure placeholder. Such rows must
-  /// never be treated as ground truth by the cache: persisting one cements a
-  /// transient failure forever (later loads serve it without retrying the
-  /// still-good server ciphertext), and merges must let a fresh good decrypt
-  /// replace it. The legacy pre-encryption notice is NOT a failure — it is
-  /// stable truth and caches normally.
-  bool get isDecryptionFailure =>
-      content == decryptionFailedContent ||
-      content == decryptionFailedMediaContent;
+  /// Whether this bubble is the historical pre-removal notice. It is stable
+  /// truth and caches normally.
+  bool get isLegacyNotice => content == legacyEncryptedNotice;
   bool get isGroupMessage => groupId != null;
 
   @override
@@ -222,12 +178,6 @@ class Message extends Equatable {
         status,
         createdAt,
         updatedAt,
-        encryption,
-        cipherType,
-        cipherBody,
-        distribution,
-        mediaKey,
-        mediaNonce,
         // Transient by design: progress ticks rebuild the bubble but are
         // never persisted (toJson omits the field; fromJson yields null).
         uploadProgress,

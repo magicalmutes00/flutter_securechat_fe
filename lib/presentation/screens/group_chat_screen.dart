@@ -8,7 +8,6 @@ import '../../data/models/group_model.dart';
 import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
-import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/websocket_service.dart';
 import '../widgets/message_bubble.dart';
@@ -86,14 +85,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           .reversed
           .toList();
 
-      final decrypted = <Message>[];
-      for (final m in fetched) {
-        decrypted.add(_asDisplayable(await _decryptGroupMessage(m)));
-      }
-
       if (!mounted) return;
       setState(() {
-        _messages = decrypted;
+        _messages = fetched;
         _isLoading = false;
       });
       _jumpToLatest();
@@ -107,10 +101,9 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   }
 
   void _subscribe() {
-    // Live messages arrive already decrypted by InAppNotificationService
-    // (each sender-key ciphertext must be decrypted exactly once).
-    _messageSub = InAppNotificationService.instance.decryptedGroupMessageStream
-        .listen((message) {
+    // Live plaintext messages, forwarded by InAppNotificationService.
+    _messageSub =
+        InAppNotificationService.instance.groupMessageStream.listen((message) {
       if (message.groupId != widget.group.id) return;
       unawaited(_onIncoming(message));
     });
@@ -134,35 +127,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     if (message.senderId == _currentUserId) return;
     setState(() {
       if (!_messages.any((m) => m.id == message.id)) {
-        _messages.add(_asDisplayable(message));
+        _messages.add(message);
       }
     });
     _scrollToLatest();
-  }
-
-  Future<Message> _decryptGroupMessage(Message message) async {
-    // Memoized in E2eeService: live socket delivery and history fetches share
-    // the first successful plaintext instead of consuming the sender-key
-    // chain twice (which throws and renders the placeholder).
-    return E2eeService.instance.decryptGroupMessage(
-      message,
-      currentUserId: _currentUserId ?? '',
-    );
-  }
-
-  /// Plaintext-era group messages carry no ciphertext; anything else that
-  /// still arrives undecryptable gets an honest notice bubble.
-  Message _asDisplayable(Message m) {
-    if (m.content.isEmpty &&
-        (m.encryption == 'signal' || m.encryption == 'sgkey')) {
-      return m.copyWith(
-        content: '🔒 Encrypted message from before encryption was removed',
-        encryption: 'none',
-        cipherBody: null,
-        cipherType: null,
-      );
-    }
-    return m;
   }
 
   void _jumpToLatest() {
@@ -244,25 +212,6 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           .showSnackBar(SnackBar(content: Text(reason)));
     }
 
-    Map<String, dynamic> crypto;
-    try {
-      crypto = await E2eeService.instance.prepareOutgoingGroupText(
-        currentUserId: me,
-        groupId: widget.group.id,
-        plaintext: content,
-      );
-    } on E2eeEncryptionException catch (e) {
-      // Encryption failed: nothing was sent. Remove the optimistic bubble
-      // and explain why instead of silently sending plaintext.
-      if (!mounted) return;
-      setState(() => _messages.removeWhere((m) => m.id == tempMessage.id));
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not secure that message: ${e.message}')),
-      );
-      return;
-    }
-    final usesSignal = crypto['encryption'] == 'sgkey';
-
     // Groups have no ack path and no REST send: a dead socket must mark the
     // bubble failed (retryable) instead of leaving a phantom 'sent' bubble.
     const offlineReason = 'No connection — the message was not sent. '
@@ -280,14 +229,10 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       _wsService.sendGroupMessage(
         groupId: widget.group.id,
         messageType: 'text',
-        content: usesSignal ? '' : content,
+        content: content,
         replyToId: wireReplyId != null && wireReplyId.startsWith('temp_')
             ? null
             : wireReplyId,
-        encryption: crypto['encryption'] as String? ?? 'none',
-        cipherType: crypto['cipher_type'] as int?,
-        cipherBody: crypto['cipher_body'] as String?,
-        distribution: crypto['distribution'] as String?,
       );
     } catch (_) {
       // Socket died mid-send.
@@ -389,8 +334,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                         ? EmptyState(
                             icon: Icons.group_outlined,
                             title: 'No messages yet',
-                            body:
-                                'Say hello to ${widget.group.name} — group messages are end-to-end encrypted.',
+                            body: 'Say hello to ${widget.group.name}.',
                           )
                         : ListView(
                             controller: _scrollController,
@@ -455,8 +399,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final ids = _messages.map((m) => m.id).toSet();
     _messageKeys.removeWhere((id, _) => !ids.contains(id));
 
-    // Resolve reply targets from the already-decrypted messages in state —
-    // never re-fetch (a sender-key ciphertext can only be decrypted once).
+    // Resolve reply targets from the loaded messages in state.
     final byId = {for (final m in _messages) m.id: m};
 
     final widgets = <Widget>[];
@@ -473,8 +416,7 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final isMe = message.senderId == _currentUserId;
       final tight = lastSender == message.senderId;
       lastSender = message.senderId;
-      final quoted =
-          message.replyToId == null ? null : byId[message.replyToId];
+      final quoted = message.replyToId == null ? null : byId[message.replyToId];
       widgets.add(
         Padding(
           key: _messageKeys.putIfAbsent(message.id, () => GlobalKey()),

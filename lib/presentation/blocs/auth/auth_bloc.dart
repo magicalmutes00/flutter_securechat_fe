@@ -8,7 +8,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../data/models/user_model.dart';
 import '../../../data/services/api_client.dart';
-import '../../../data/services/e2ee/e2ee_service.dart';
 import '../../../data/services/media_cache_service.dart';
 import '../../../data/services/media_preparation_service.dart';
 import '../../../data/services/firebase_auth_service.dart';
@@ -528,9 +527,8 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     await _apiClient.clearTokens();
     if (currentUserId != null) {
       await _localStorage.clearUserData(currentUserId);
-      // Signal identity keys and sessions must not survive the account on
-      // this device.
-      await E2eeService.instance.destroyUserState(currentUserId);
+      // Drop any leftover pre-removal encryption state for the account.
+      await _localStorage.purgeLegacyE2eeState(userId: currentUserId);
     }
     // Cached media (images, avatars) must not survive logout either.
     await MediaCacheService().clear();

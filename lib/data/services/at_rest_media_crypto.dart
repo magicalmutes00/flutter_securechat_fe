@@ -4,13 +4,16 @@ import 'package:pointycastle/api.dart';
 import 'package:pointycastle/block/aes.dart';
 import 'package:pointycastle/block/modes/gcm.dart';
 
-/// AES-256-GCM helpers for encrypting media attachments end-to-end.
+/// AES-256-GCM helpers for **local at-rest protection only** — not end-to-end
+/// encryption.
 ///
-/// A fresh random key + nonce is generated per attachment and the key material
-/// is never stored on the server; it is delivered to the recipient inside the
-/// Signal-encrypted message that references the file.
-class MediaCrypto {
-  MediaCrypto._();
+/// Used by [MediaCacheService] to encrypt cached media files on disk with the
+/// per-installation device key from [AtRestKey]. Cached bytes never leave the
+/// device through this path; network traffic carries normal plaintext uploads
+/// and downloads. A fresh random nonce is generated per write; the key itself
+/// lives in the platform keychain/keystore and never touches disk in plaintext.
+class AtRestMediaCrypto {
+  AtRestMediaCrypto._();
 
   static const int keyLength = 32;
   static const int nonceLength = 12;

@@ -7,28 +7,24 @@ import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/message_model.dart';
 import '../../data/services/api_client.dart';
-import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/media_cache_service.dart';
 
-/// Displays an image attachment, downloading the (possibly encrypted) blob with
-/// the authenticated API client and decrypting it in memory before rendering.
+/// Displays an image attachment in plaintext, downloading the bytes with the
+/// authenticated API client and rendering them from memory.
 ///
-/// The AES key/nonce come from the decrypted Signal envelope held in
-/// [Message.mediaKey]/[Message.mediaNonce], restored when needed from the
-/// encrypted durable plaintext store. The *decrypted* image is cached via
-/// [MediaCacheService] (encrypted at rest)
-/// keyed by the attachment path, so re-opening a conversation — or viewing
-/// media offline — does not re-download it.
-class EncryptedImage extends StatefulWidget {
-  const EncryptedImage({super.key, required this.message});
+/// The downloaded bytes are cached via [MediaCacheService] (encrypted at rest
+/// for local storage protection) keyed by the attachment path, so re-opening
+/// a conversation — or viewing media offline — does not re-download it.
+class AttachmentImage extends StatefulWidget {
+  const AttachmentImage({super.key, required this.message});
 
   final Message message;
 
   @override
-  State<EncryptedImage> createState() => _EncryptedImageState();
+  State<AttachmentImage> createState() => _AttachmentImageState();
 }
 
-class _EncryptedImageState extends State<EncryptedImage> {
+class _AttachmentImageState extends State<AttachmentImage> {
   final ApiClient _api = ApiClient();
   final MediaCacheService _cache = MediaCacheService();
   Uint8List? _bytes;
@@ -41,9 +37,10 @@ class _EncryptedImageState extends State<EncryptedImage> {
   }
 
   @override
-  void didUpdateWidget(EncryptedImage oldWidget) {
+  void didUpdateWidget(AttachmentImage oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.message.id != widget.message.id) {
+    if (oldWidget.message.id != widget.message.id ||
+        oldWidget.message.filePath != widget.message.filePath) {
       _bytes = null;
       _failed = false;
       _load();
@@ -58,6 +55,7 @@ class _EncryptedImageState extends State<EncryptedImage> {
   Future<void> _load() async {
     final path = widget.message.filePath;
     if (path == null || path.isEmpty) {
+      if (!mounted) return;
       setState(() => _failed = true);
       return;
     }
@@ -74,16 +72,6 @@ class _EncryptedImageState extends State<EncryptedImage> {
       return;
     }
 
-    // Fail closed without a media key before consulting the cache:
-    // downloading, caching, or serving raw ciphertext would poison the media
-    // cache and render undecryptable bytes as an image. A resolved key
-    // envelope must accompany every hosted attachment.
-    if (widget.message.mediaKey == null || widget.message.mediaNonce == null) {
-      if (!mounted) return;
-      setState(() => _failed = true);
-      return;
-    }
-
     final cached = await _cache.read(path);
     if (cached != null) {
       if (!mounted) return;
@@ -92,12 +80,13 @@ class _EncryptedImageState extends State<EncryptedImage> {
     }
 
     try {
-      final raw = await _api.downloadFileBytes('${AppConstants.baseUrl}$path');
-      final decoded =
-          await E2eeService.instance.decryptMediaBytes(widget.message, raw);
-      await _cache.write(path, decoded);
+      final url = path.startsWith('http') ? path : '${AppConstants.baseUrl}$path';
+      final raw = await _api.downloadFileBytes(url);
+      final bytes = Uint8List.fromList(raw);
+      if (bytes.isEmpty) throw Exception('Empty media response');
+      await _cache.write(path, bytes);
       if (!mounted) return;
-      setState(() => _bytes = decoded);
+      setState(() => _bytes = bytes);
     } catch (e) {
       if (!mounted) return;
       setState(() => _failed = true);
@@ -112,8 +101,8 @@ class _EncryptedImageState extends State<EncryptedImage> {
         width: 200,
         color: context.colors.surfaceContainerHighest,
         child: Center(
-          child: Icon(Icons.lock_outline,
-              size: 40, color: context.appColors.primaryEmphasis),
+          child: Icon(Icons.broken_image,
+              size: 40, color: context.colors.onSurfaceVariant),
         ),
       );
     }

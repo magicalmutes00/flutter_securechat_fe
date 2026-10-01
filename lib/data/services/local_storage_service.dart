@@ -1,11 +1,12 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:hive_flutter/hive_flutter.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'at_rest_key.dart';
-import 'decrypted_message_store.dart';
 
 /// A record of cached conversations for a user, returned by
 /// [LocalStorageService.getConversations].
@@ -57,8 +58,6 @@ class LocalStorageService {
 
   String _outboxKey(String userId) => '$userId:outbox';
 
-  String _decryptedMessagesKey(String userId) => '$userId:decrypted_plaintexts';
-
   /// Returns the messages cached for a single 1:1 conversation (old->new).
   List<Message> getMessages(String userId, String peerUserId) {
     final raw = _db.get(_messagesKey(userId, peerUserId));
@@ -98,7 +97,7 @@ class LocalStorageService {
 
   /// Replaces the cached message [oldId] with [replacement] (used to swap an
   /// optimistic temp bubble for the server-acknowledged message carrying the
-  /// real plaintext). Falls back to append when [oldId] is not cached.
+  /// real content). Falls back to append when [oldId] is not cached.
   Future<void> replaceMessage(
     String userId,
     String peerUserId,
@@ -113,46 +112,6 @@ class LocalStorageService {
     }
     existing[idx] = replacement;
     await saveMessages(userId, peerUserId, existing);
-  }
-
-  /// Returns durable decrypted-message records for [userId], keyed by server
-  /// message id. Malformed records are skipped rather than failing the whole
-  /// load: one corrupt entry must not hide every other retained plaintext.
-  Future<Map<String, DecryptedMessageRecord>> getDecryptedMessages(
-    String userId,
-  ) async {
-    final raw = _db.get(_decryptedMessagesKey(userId));
-    if (raw == null || raw.isEmpty) return {};
-
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return {};
-      final recordsRaw = decoded['records'];
-      if (recordsRaw is! Map) return {};
-
-      final records = <String, DecryptedMessageRecord>{};
-      recordsRaw.forEach((key, value) {
-        if (key is! String || key.isEmpty) return;
-        final record = DecryptedMessageRecord.tryFromJson(value);
-        if (record != null) records[key] = record;
-      });
-      return records;
-    } catch (_) {
-      return {};
-    }
-  }
-
-  /// Replaces the durable decrypted-message records for [userId]. The box is
-  /// encrypted at rest, and callers bound the map before writing.
-  Future<void> saveDecryptedMessages(
-    String userId,
-    Map<String, DecryptedMessageRecord> records,
-  ) async {
-    final encoded = jsonEncode({
-      'version': 1,
-      'records': records.map((id, record) => MapEntry(id, record.toJson())),
-    });
-    await _db.put(_decryptedMessagesKey(userId), encoded);
   }
 
   /// Persists the conversation list and per-conversation last messages.
@@ -239,6 +198,55 @@ class LocalStorageService {
   /// Clears the whole outbox (used when the account logs out).
   Future<void> clearOutbox(String userId) async {
     await _db.delete(_outboxKey(userId));
+  }
+
+  /// Removes legacy pre-removal encryption state without touching normal
+  /// cached data.
+  ///
+  /// Deletes durable plaintext records (`<userId>:decrypted_plaintexts`, all
+  /// users when [userId] is null) and every per-account `securechat_e2ee_*`
+  /// Hive box from disk. Normal cached conversations, accounts, media, avatars
+  /// and settings are left intact.
+  Future<void> purgeLegacyE2eeState({String? userId}) async {
+    final keysToRemove = <String>[];
+    for (final key in _db.keys) {
+      if (key is! String) continue;
+      if (userId != null) {
+        if (key == '$userId:decrypted_plaintexts') keysToRemove.add(key);
+      } else if (key.endsWith(':decrypted_plaintexts')) {
+        keysToRemove.add(key);
+      }
+    }
+    if (keysToRemove.isNotEmpty) {
+      await _db.deleteAll(keysToRemove);
+    }
+    await _deleteLegacyE2eeBoxes(userId);
+  }
+
+  /// Deletes every legacy Signal-protocol Hive box. Box names embed account
+  /// ids that may no longer be known, so sweep the Hive directory by the
+  /// unique box-name prefix rather than tracking individual users.
+  Future<void> _deleteLegacyE2eeBoxes(String? userId) async {
+    try {
+      if (userId != null) {
+        try {
+          await Hive.deleteBoxFromDisk('securechat_e2ee_$userId');
+        } catch (_) {}
+      }
+      final directory = await getApplicationDocumentsDirectory();
+      await for (final entity in directory.list()) {
+        if (entity is! File) continue;
+        final segments = entity.uri.pathSegments;
+        final name = segments.isEmpty ? '' : segments.last;
+        if (name.startsWith('securechat_e2ee_')) {
+          try {
+            await entity.delete();
+          } catch (_) {}
+        }
+      }
+    } catch (_) {
+      // Purge is best-effort; a missing box is not an error.
+    }
   }
 
   /// Clears all cached data belonging to a user (used on logout).

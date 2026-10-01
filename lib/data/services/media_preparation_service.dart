@@ -6,8 +6,8 @@ import 'package:path_provider/path_provider.dart';
 import '../../core/constants/app_constants.dart';
 
 /// Thrown when a picked file must not be uploaded. Carries the exact line
-/// the UI shows — validation runs on-device before any encryption or upload
-/// work, so these rejections are instant and free.
+/// the UI shows — validation runs on-device before any upload work, so these
+/// rejections are instant and free.
 class MediaValidationException implements Exception {
   const MediaValidationException(this.message);
 
@@ -19,14 +19,14 @@ class MediaValidationException implements Exception {
 
 /// Pre-flight checks for outgoing attachments. Mirrors the server's
 /// extension allow-list and the app's per-type size caps so doomed uploads
-/// fail here — instantly — instead of after a full encrypt + upload cycle.
+/// fail here — instantly — instead of after a full upload cycle.
 class MediaPreparationService {
   MediaPreparationService._();
 
   /// Must stay in sync with the backend's `allowedFileExtensions`.
-  /// 'enc' covers ciphertext paths; HEIC/HEIF are absent on purpose — the
-  /// server rejects them, so they fail here with an actionable message
-  /// instead of a bare 400 after uploading megabytes.
+  /// HEIC/HEIF are absent on purpose — the server rejects them, so they fail
+  /// here with an actionable message instead of a bare 400 after uploading
+  /// megabytes.
   static const Map<String, List<String>> allowedExtensions = {
     AppConstants.messageTypeImage: [
       'jpg',
@@ -34,7 +34,6 @@ class MediaPreparationService {
       'png',
       'gif',
       'webp',
-      'enc'
     ],
     AppConstants.messageTypeVideo: [
       'mp4',
@@ -42,7 +41,6 @@ class MediaPreparationService {
       'avi',
       'mkv',
       'webm',
-      'enc'
     ],
     AppConstants.messageTypeAudio: [
       'mp3',
@@ -50,7 +48,6 @@ class MediaPreparationService {
       'aac',
       'm4a',
       'ogg',
-      'enc'
     ],
     AppConstants.messageTypeDocument: [
       'pdf',
@@ -61,7 +58,6 @@ class MediaPreparationService {
       'xlsx',
       'ppt',
       'pptx',
-      'enc'
     ],
   };
 
@@ -95,9 +91,9 @@ class MediaPreparationService {
     }
   }
 
-  /// Photos 12 MP and up are the norm; uploading them raw means encrypting
-  /// and sending ~5-10x the bytes a chat bubble needs. Compress to a bounded
-  /// JPEG before encryption instead.
+  /// Photos 12 MP and up are the norm; uploading them raw means sending
+  /// ~5-10x the bytes a chat bubble needs. Compress to a bounded JPEG
+  /// before upload instead.
   static const int compressMaxDimension = 1600;
   static const int compressQuality = 80;
 
@@ -125,7 +121,7 @@ class MediaPreparationService {
   }
 
   /// Converts a picked photo to a bounded JPEG and returns the path to
-  /// upload-and-encrypt. Returns [filePath] unchanged when conversion is
+  /// upload. Returns [filePath] unchanged when conversion is
   /// pointless (small/GIF/WebP/non-image) or the native codec fails.
   /// Throws [MediaValidationException] when the file is gone.
   static Future<String> prepareImage({
@@ -185,8 +181,8 @@ class MediaPreparationService {
     return '$stem.jpg';
   }
 
-  /// Deletes our own transient files (compressed copies, ciphertext). Never
-  /// touches the original — it belongs to the picker/gallery.
+  /// Deletes our own transient files (compressed copies). Never touches the
+  /// original — it belongs to the picker/gallery.
   static Future<void> deleteTemp(String path, String originalPath) async {
     if (path == originalPath) return;
     try {

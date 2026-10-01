@@ -5,7 +5,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/time_format.dart';
 import '../../data/models/message_model.dart';
-import 'encrypted_image.dart';
+import 'attachment_image.dart';
 import 'ui/ui.dart';
 
 /// Chat bubble. Sent messages are solid brand blue with white copy;
@@ -17,7 +17,7 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
-  /// Already-decrypted quoted message, or null when the target isn't loaded
+  /// Already-loaded quoted message, or null when the target isn't loaded
   /// (older than the fetched page, or deleted since). The bubble renders a
   /// strip whenever [Message.replyToId] is set, falling back to an
   /// "unavailable" strip when this is null.
@@ -289,13 +289,19 @@ class _MessageBubbleState extends State<MessageBubble>
 
   Widget _buildContentBody() {
     final contentColor = _contentColor();
+    if (widget.message.isLegacyNotice) {
+      return Text(
+        widget.message.content,
+        style: context.text.bodyLarge?.copyWith(color: contentColor),
+      );
+    }
     if (widget.message.isTextMessage) {
       return Text(
         widget.message.content,
         style: context.text.bodyLarge?.copyWith(color: contentColor),
       );
     } else if (widget.message.isImageMessage) {
-      return EncryptedImage(message: widget.message);
+      return AttachmentImage(message: widget.message);
     } else if (widget.message.isVideoMessage) {
       return Container(
         height: 150,
@@ -305,8 +311,8 @@ class _MessageBubbleState extends State<MessageBubble>
           borderRadius: BorderRadius.circular(AppRadius.sm),
         ),
         child: Center(
-          child: Icon(Icons.play_circle_fill,
-              size: 50, color: _accentOnBubble()),
+          child:
+              Icon(Icons.play_circle_fill, size: 50, color: _accentOnBubble()),
         ),
       );
     } else if (widget.message.isAudioMessage) {
@@ -416,15 +422,13 @@ class _MessageBubbleState extends State<MessageBubble>
       return Icon(
         Icons.done_all,
         size: 15,
-        color:
-            context.appColors.onSentBubble.withValues(alpha: 0.8),
+        color: context.appColors.onSentBubble.withValues(alpha: 0.8),
       );
     } else {
       return Icon(
         Icons.done,
         size: 15,
-        color:
-            context.appColors.onSentBubble.withValues(alpha: 0.8),
+        color: context.appColors.onSentBubble.withValues(alpha: 0.8),
       );
     }
   }

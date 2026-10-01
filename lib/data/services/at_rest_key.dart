@@ -8,8 +8,8 @@ import 'package:hive_flutter/hive_flutter.dart';
 ///
 /// The key itself is never stored on disk in plaintext: it is generated once
 /// with a CSPRNG and kept inside the platform keychain/keystore via
-/// [FlutterSecureStorage]. Without the key the cached messages, Signal session
-/// state and prekeys on disk are unreadable.
+/// [FlutterSecureStorage]. Without the key the cached messages and other
+/// boxes on disk are unreadable.
 class AtRestKey {
   static const String _keyStorageName = 'securechat_at_rest_key';
 
