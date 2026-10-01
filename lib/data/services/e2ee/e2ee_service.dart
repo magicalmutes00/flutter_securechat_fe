@@ -38,6 +38,15 @@ class E2eeEncryptionException implements Exception {
   String toString() => message;
 }
 
+/// One-line cause for encryption failures: the exception type plus the head
+/// of its message. Libsignal/transport messages carry no key material, so
+/// this is safe to surface; it turns "could not encrypt" from a mystery
+/// into a diagnosis.
+String _shortCause(Object e) {
+  final text = e.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+  return text.length <= 160 ? text : '${text.substring(0, 160)}…';
+}
+
 /// High-level E2EE facade used by the chat layer.
 ///
 /// Owns one [E2eeManager] per signed-in user (key material and sessions are
@@ -132,27 +141,39 @@ class E2eeService {
   ///
   /// Throws [E2eeEncryptionException] when encryption is impossible (e.g. the
   /// recipient has not published a key bundle yet) so callers can surface the
-  /// failure instead of silently sending plaintext.
+  /// failure instead of silently sending plaintext. The message names the
+  /// underlying cause — a bare "could not encrypt" is unactionable.
   Future<Map<String, dynamic>> prepareOutgoingText({
     required String currentUserId,
     required String receiverId,
     required String plaintext,
   }) async {
+    Map<String, dynamic> pack(EncryptedMessage encrypted) => {
+          'encryption': 'signal',
+          'cipher_type': encrypted.type,
+          'cipher_body': encrypted.body,
+        };
     try {
       final manager = await forUser(currentUserId);
       if (!await manager.hasSession(receiverId)) {
         await manager.establishSession(receiverId);
       }
-      final encrypted = await manager.encrypt(receiverId, plaintext);
-      return {
-        'encryption': 'signal',
-        'cipher_type': encrypted.type,
-        'cipher_body': encrypted.body,
-      };
+      try {
+        return pack(await manager.encrypt(receiverId, plaintext));
+      } catch (e) {
+        // The session may be stale (e.g. the peer reinstalled and the local
+        // record no longer matches): drop it, rebuild once via X3DH, retry.
+        // A missing bundle is NOT retried — re-fetching a 404 helps no one
+        // and each fetch burns one of the peer's one-time prekeys.
+        await manager.resetSession(receiverId);
+        await manager.establishSession(receiverId);
+        return pack(await manager.encrypt(receiverId, plaintext));
+      }
+    } on E2eeEncryptionException {
+      rethrow;
     } catch (e) {
       throw E2eeEncryptionException(
-        'Message not sent: could not encrypt (recipient has no key bundle or '
-        'session establishment failed)',
+        'Message not sent: could not encrypt (${_shortCause(e)})',
       );
     }
   }
@@ -162,25 +183,34 @@ class E2eeService {
   ///
   /// Throws [E2eeEncryptionException] when no sender key can be established so
   /// callers can surface the failure instead of silently sending plaintext.
+  /// The message names the underlying cause, like the 1:1 path.
   Future<Map<String, dynamic>> prepareOutgoingGroupText({
     required String currentUserId,
     required String groupId,
     required String plaintext,
   }) async {
-    final manager = await forUser(currentUserId);
-    final encrypted =
-        await manager.encryptGroup(groupId, currentUserId, plaintext);
-    if (encrypted == null) {
-      throw const E2eeEncryptionException(
-        'Message not sent: group encryption failed',
+    try {
+      final manager = await forUser(currentUserId);
+      final encrypted =
+          await manager.encryptGroup(groupId, currentUserId, plaintext);
+      if (encrypted == null) {
+        throw const E2eeEncryptionException(
+          'Message not sent: group encryption failed',
+        );
+      }
+      return {
+        'encryption': 'sgkey',
+        'distribution': encrypted.distributionB64,
+        'cipher_type': 0,
+        'cipher_body': encrypted.body,
+      };
+    } on E2eeEncryptionException {
+      rethrow;
+    } catch (e) {
+      throw E2eeEncryptionException(
+        'Message not sent: group encryption failed (${_shortCause(e)})',
       );
     }
-    return {
-      'encryption': 'sgkey',
-      'distribution': encrypted.distributionB64,
-      'cipher_type': 0,
-      'cipher_body': encrypted.body,
-    };
   }
 
   /// Decrypts a group message from [senderId], applying the sender-key
