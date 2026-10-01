@@ -63,7 +63,24 @@ class ApiClient {
         },
       ));
 
-  Future<bool> _refreshToken() async {
+  /// Only one refresh may be in flight at a time. On cold start several
+  /// requests can 401 simultaneously; without this they would each refresh
+  /// concurrently, losers would present the already-revoked token, and the
+  /// resulting clearTokens() would wipe the winner's fresh pair (logout).
+  Future<bool>? _refreshInFlight;
+
+  Future<bool> _refreshToken() {
+    final ongoing = _refreshInFlight;
+    if (ongoing != null) return ongoing;
+    final future = _doRefresh();
+    _refreshInFlight = future;
+    future.whenComplete(() {
+      if (identical(_refreshInFlight, future)) _refreshInFlight = null;
+    });
+    return future;
+  }
+
+  Future<bool> _doRefresh() async {
     try {
       final refreshToken =
           await _storage.read(key: AppConstants.refreshTokenKey);
