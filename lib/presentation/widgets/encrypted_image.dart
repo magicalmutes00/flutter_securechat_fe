@@ -14,8 +14,9 @@ import '../../data/services/media_cache_service.dart';
 /// the authenticated API client and decrypting it in memory before rendering.
 ///
 /// The AES key/nonce come from the decrypted Signal envelope held in
-/// [Message.mediaKey]/[Message.mediaNonce]; they never touch disk. The
-/// *decrypted* image is cached via [MediaCacheService] (encrypted at rest)
+/// [Message.mediaKey]/[Message.mediaNonce], restored when needed from the
+/// encrypted durable plaintext store. The *decrypted* image is cached via
+/// [MediaCacheService] (encrypted at rest)
 /// keyed by the attachment path, so re-opening a conversation — or viewing
 /// media offline — does not re-download it.
 class EncryptedImage extends StatefulWidget {
@@ -73,6 +74,16 @@ class _EncryptedImageState extends State<EncryptedImage> {
       return;
     }
 
+    // Fail closed without a media key before consulting the cache:
+    // downloading, caching, or serving raw ciphertext would poison the media
+    // cache and render undecryptable bytes as an image. A resolved key
+    // envelope must accompany every hosted attachment.
+    if (widget.message.mediaKey == null || widget.message.mediaNonce == null) {
+      if (!mounted) return;
+      setState(() => _failed = true);
+      return;
+    }
+
     final cached = await _cache.read(path);
     if (cached != null) {
       if (!mounted) return;
@@ -82,12 +93,8 @@ class _EncryptedImageState extends State<EncryptedImage> {
 
     try {
       final raw = await _api.downloadFileBytes('${AppConstants.baseUrl}$path');
-      Uint8List decoded = Uint8List.fromList(raw);
-      if (widget.message.mediaKey != null &&
-          widget.message.mediaNonce != null) {
-        decoded =
-            await E2eeService.instance.decryptMediaBytes(widget.message, raw);
-      }
+      final decoded =
+          await E2eeService.instance.decryptMediaBytes(widget.message, raw);
       await _cache.write(path, decoded);
       if (!mounted) return;
       setState(() => _bytes = decoded);

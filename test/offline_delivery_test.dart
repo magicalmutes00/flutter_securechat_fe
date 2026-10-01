@@ -20,21 +20,35 @@ Message _fileMessage() {
 
 void main() {
   group('discardStagedPlaintext', () {
-    test('drops only the most recently staged envelope', () {
+    test('drops only the most recently staged envelope', () async {
       final svc = E2eeService.instance;
       svc.stageOwnPlaintext('peer-discard-1', 'A');
       svc.stageOwnPlaintext('peer-discard-1', 'B');
       svc.discardStagedPlaintext('peer-discard-1');
-      expect(svc.commitOwnPlaintext('srv-1', 'peer-discard-1'), 'A');
+      expect(
+        await svc.commitOwnPlaintext(
+          'srv-1',
+          'peer-discard-1',
+          currentUserId: 'user-a',
+        ),
+        'A',
+      );
     });
 
-    test('empty-queue discard and commit are safe no-ops', () {
+    test('empty-queue discard and commit are safe no-ops', () async {
       final svc = E2eeService.instance;
       svc.discardStagedPlaintext('peer-discard-2');
-      expect(svc.commitOwnPlaintext('srv-2', 'peer-discard-2'), isNull);
+      expect(
+        await svc.commitOwnPlaintext(
+          'srv-2',
+          'peer-discard-2',
+          currentUserId: 'user-a',
+        ),
+        isNull,
+      );
     });
 
-    test('a dead send cannot poison the next ack', () {
+    test('a dead send cannot poison the next ack', () async {
       // A is staged, its socket dies (discarded), B is staged, B's ack
       // arrives: it must commit B, not the dead A.
       final svc = E2eeService.instance;
@@ -42,7 +56,11 @@ void main() {
       svc.discardStagedPlaintext('peer-discard-3');
       svc.stageOwnPlaintext('peer-discard-3', 'live-envelope');
       expect(
-        svc.commitOwnPlaintext('srv-3', 'peer-discard-3'),
+        await svc.commitOwnPlaintext(
+          'srv-3',
+          'peer-discard-3',
+          currentUserId: 'user-a',
+        ),
         'live-envelope',
       );
     });

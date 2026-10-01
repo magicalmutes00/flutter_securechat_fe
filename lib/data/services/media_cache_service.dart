@@ -36,8 +36,9 @@ class MediaCacheService {
   /// Cache generation: bumped when the meaning of a cached entry changes.
   /// v1 entries may hold UNDECRYPTED ciphertext (cached by the broken
   /// sender path that skipped decryption without a media key) — serving
-  /// them renders nothing, forever, since cache hits bypass decrypt.
-  static const _generation = 'v2';
+  /// them renders nothing, forever, since cache hits bypass decrypt. v2
+  /// entries predate fail-closed media loading and can have the same flaw.
+  static const _generation = 'v3';
 
   Future<Directory> _cacheDir() async {
     final existing = _dir;
@@ -49,8 +50,7 @@ class MediaCacheService {
     } else {
       // One-time migration: this directory is ours alone, so any entry
       // predating the current generation is dropped rather than served.
-      final marker =
-          File('${dir.path}${Platform.pathSeparator}.$_generation');
+      final marker = File('${dir.path}${Platform.pathSeparator}.$_generation');
       if (!await marker.exists()) {
         for (final entry in dir.listSync()) {
           try {
@@ -70,8 +70,7 @@ class MediaCacheService {
     return _keyBytes ??= await AtRestKey().getOrCreateKeyBytes();
   }
 
-  String _fileName(String key) =>
-      sha256.convert(utf8.encode(key)).toString();
+  String _fileName(String key) => sha256.convert(utf8.encode(key)).toString();
 
   /// Returns the cached bytes for [key], or null on a miss.
   Future<Uint8List?> read(String key) async {
@@ -79,7 +78,8 @@ class MediaCacheService {
     if (hot != null) return hot;
 
     try {
-      final file = File('${(await _cacheDir()).path}${Platform.pathSeparator}${_fileName(key)}');
+      final file = File(
+          '${(await _cacheDir()).path}${Platform.pathSeparator}${_fileName(key)}');
       if (!await file.exists()) return null;
 
       final blob = await file.readAsBytes();
@@ -87,8 +87,7 @@ class MediaCacheService {
 
       final keyBytes = await _key();
       final nonce = Uint8List.sublistView(blob, 0, MediaCrypto.nonceLength);
-      final ciphertext =
-          Uint8List.sublistView(blob, MediaCrypto.nonceLength);
+      final ciphertext = Uint8List.sublistView(blob, MediaCrypto.nonceLength);
       final plain = MediaCrypto.decrypt(
         Uint8List.fromList(keyBytes),
         Uint8List.fromList(nonce),
@@ -119,8 +118,11 @@ class MediaCacheService {
         bytes,
       );
 
-      final file = File('${(await _cacheDir()).path}${Platform.pathSeparator}${_fileName(key)}');
-      final blob = BytesBuilder()..add(nonce)..add(cipher);
+      final file = File(
+          '${(await _cacheDir()).path}${Platform.pathSeparator}${_fileName(key)}');
+      final blob = BytesBuilder()
+        ..add(nonce)
+        ..add(cipher);
       await file.writeAsBytes(blob.toBytes(), flush: true);
 
       if (_memory.length >= _maxEntries) _memory.remove(_memory.keys.first);

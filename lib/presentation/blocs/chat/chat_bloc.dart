@@ -155,6 +155,34 @@ Message mergeHistoryMessage(Message existing, Message incoming) {
   return existing;
 }
 
+/// Merges a newly fetched history page into the locally cached conversation.
+///
+/// Server fetches are pages, not replacements: rows already cached (for
+/// example older messages outside this page, optimistic bubbles, or known-good
+/// plaintexts) are retained, and per-id conflicts use [mergeHistoryMessage].
+/// The result is chronological so it can be persisted and rendered directly.
+List<Message> mergeHistoryMessages(
+  List<Message> existing,
+  List<Message> incoming,
+) {
+  final merged = List<Message>.of(existing);
+  final indexById = <String, int>{};
+  for (var i = 0; i < merged.length; i++) {
+    indexById.putIfAbsent(merged[i].id, () => i);
+  }
+  for (final message in incoming) {
+    final index = indexById[message.id];
+    if (index == null) {
+      indexById[message.id] = merged.length;
+      merged.add(message);
+    } else {
+      merged[index] = mergeHistoryMessage(merged[index], message);
+    }
+  }
+  merged.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+  return merged;
+}
+
 /// Extracts the hosted file id from a server file URL (`/api/files/<id>`).
 /// Returns null for local paths and anything else — only server URLs are
 /// ever passed to the file-delete endpoint.
@@ -325,7 +353,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         // never Signal-decrypt our own messages (no session with ourselves).
         final serverId = sent['id'] as String? ?? sent['_id'] as String?;
         if (usesSignal && serverId != null && serverId.isNotEmpty) {
-          E2eeService.instance.cacheOwnPlaintext(serverId, message.content);
+          await E2eeService.instance.cacheOwnPlaintext(
+            serverId,
+            message.content,
+            currentUserId: currentUserId,
+          );
         }
         await _localStorage.removeFromOutbox(currentUserId, message.id);
       } catch (_) {
@@ -413,8 +445,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         // local plaintext (e.g. our own message sent from another device
         // whose staged plaintext is gone) with an empty/placeholder bubble.
         if (decrypted.senderId == currentUserId &&
-            (decrypted.content.isEmpty ||
-                decrypted.content.startsWith('🔒'))) {
+            (decrypted.content.isEmpty || decrypted.content.startsWith('🔒'))) {
           final local = localById[decrypted.id];
           if (local != null &&
               local.content.isNotEmpty &&
@@ -427,9 +458,19 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
       // Never persist failure placeholders: a transiently-failed decrypt
       // cached as truth would be served on every later load without ever
-      // retrying the still-good server ciphertext.
-      await _localStorage.saveMessages(currentUserId, event.userId,
-          decryptedMessages.where((m) => !m.isDecryptionFailure).toList());
+      // retrying the still-good server ciphertext. Merge with the latest
+      // local cache instead of replacing it: the server returns one page, and
+      // replacing the conversation would discard older known-good plaintexts
+      // that the next page can no longer recover.
+      final freshMessages =
+          decryptedMessages.where((m) => !m.isDecryptionFailure).toList();
+      final latestLocalMessages =
+          _localStorage.getMessages(currentUserId, event.userId);
+      await _localStorage.saveMessages(
+        currentUserId,
+        event.userId,
+        mergeHistoryMessages(latestLocalMessages, freshMessages),
+      );
 
       final allMessages = [...state.messages];
       for (final msg in decryptedMessages) {
@@ -594,7 +635,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           });
           final serverId = sent['id'] as String? ?? sent['_id'] as String?;
           if (usesSignal && serverId != null && serverId.isNotEmpty) {
-            E2eeService.instance.cacheOwnPlaintext(serverId, event.content);
+            await E2eeService.instance.cacheOwnPlaintext(
+              serverId,
+              event.content,
+              currentUserId: currentUserId,
+            );
             await _swapTempWithServer(
               tempId: event.tempId,
               serverJson: sent,
@@ -685,11 +730,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       createdAt: DateTime.now(),
     );
 
-    final newLastMessages =
-        Map<String, Message>.from(state.lastMessages);
+    final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[event.receiverId] = tempMessage;
-    final updatedConversations =
-        Map<String, User>.from(state.conversations);
+    final updatedConversations = Map<String, User>.from(state.conversations);
     if (!updatedConversations.containsKey(event.receiverId)) {
       updatedConversations[event.receiverId] = User(
         id: event.receiverId,
@@ -736,8 +779,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           // A converted photo takes the original stem with a .jpg extension
           // so the server's extension allow-list sees what the bytes are;
           // otherwise the original name travels with the opaque ciphertext.
-          filename: MediaPreparationService.uploadFilename(
-              event.filePath, sendPath),
+          filename:
+              MediaPreparationService.uploadFilename(event.filePath, sendPath),
           onSendProgress: (sent, total) {
             if (isClosed || total <= 0) return;
             final progress = (sent / total).clamp(0.0, 1.0);
@@ -746,9 +789,8 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
             }
             lastEmittedProgress = progress;
             final ticked = state.messages
-                .map((m) => m.id == tempId
-                    ? m.copyWith(uploadProgress: progress)
-                    : m)
+                .map((m) =>
+                    m.id == tempId ? m.copyWith(uploadProgress: progress) : m)
                 .toList();
             emit(state.copyWith(messages: ticked));
           },
@@ -937,8 +979,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
 
     // Drop the failed bubble; the re-send renders a fresh optimistic one.
-    final messages =
-        state.messages.where((m) => m.id != event.tempId).toList();
+    final messages = state.messages.where((m) => m.id != event.tempId).toList();
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages.removeWhere((_, m) => m.id == event.tempId);
     emit(state.copyWith(
@@ -1027,7 +1068,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       if (serverId != null && serverId.isNotEmpty) {
         // Direct keying, like the text REST path — never the stage queue,
         // whose FIFO order cannot survive transport interleaving.
-        E2eeService.instance.cacheOwnPlaintext(serverId, event.envelopeJson);
+        await E2eeService.instance.cacheOwnPlaintext(
+          serverId,
+          event.envelopeJson,
+          currentUserId: currentUserId,
+          isMediaEnvelope: true,
+        );
       }
       await _swapTempWithServer(
         tempId: event.tempId,
@@ -1076,8 +1122,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
     if (server.senderId != currentUserId) return;
 
-    final plaintext = E2eeService.instance
-        .commitOwnPlaintext(server.id, server.receiverId);
+    final plaintext = await E2eeService.instance.commitOwnPlaintext(
+      server.id,
+      server.receiverId,
+      currentUserId: currentUserId,
+    );
     // Prefer the exact bubble this ack belongs to (registered at dispatch);
     // fall back to the oldest-temp scan for sends that predate the map.
     final ackTempId = server.filePath == null
@@ -1121,8 +1170,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       // just-sent bubble carries the hosted path but no media key, so it
       // downloads ciphertext and renders nothing. For file sends `plaintext`
       // is the committed key envelope.
-      resolved =
-          E2eeService.instance.applyMediaEnvelope(resolved, plaintext);
+      resolved = E2eeService.instance.applyMediaEnvelope(resolved, plaintext);
     }
 
     final messages = [...state.messages];
@@ -1379,8 +1427,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         if (state.currentChatUserId == user.id) {
           unreadCounts[user.id] = 0;
         } else {
-          unreadCounts[user.id] =
-              (conv['unread_count'] as num?)?.toInt() ?? 0;
+          unreadCounts[user.id] = (conv['unread_count'] as num?)?.toInt() ?? 0;
         }
       }
 

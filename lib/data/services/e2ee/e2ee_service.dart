@@ -7,6 +7,8 @@ import 'package:hive/hive.dart';
 import 'package:libsignal_protocol_dart/libsignal_protocol_dart.dart';
 
 import '../../models/message_model.dart';
+import '../decrypted_message_store.dart';
+import '../local_storage_service.dart';
 import 'e2ee_key_value_store.dart';
 import 'e2ee_manager.dart';
 import 'key_bundle_transport.dart';
@@ -38,20 +40,20 @@ class E2eeEncryptionException implements Exception {
   String toString() => message;
 }
 
-  /// Best-effort identity rotation for the send-recovery path: adopts the
-  /// peer's currently published identity when it changed (reinstall) and is
-  /// self-consistent. Never throws — the subsequent establish reports the
-  /// real cause if recovery is impossible.
-  Future<void> _adoptLatestIdentity(
-    E2eeManager manager,
-    String peerUserId,
-  ) async {
-    try {
-      await manager.rotatePeerIdentity(peerUserId);
-    } catch (_) {
-      // No bundle / inconsistent bundle / transport down: leave trust alone.
-    }
+/// Best-effort identity rotation for the send-recovery path: adopts the
+/// peer's currently published identity when it changed (reinstall) and is
+/// self-consistent. Never throws — the subsequent establish reports the
+/// real cause if recovery is impossible.
+Future<void> _adoptLatestIdentity(
+  E2eeManager manager,
+  String peerUserId,
+) async {
+  try {
+    await manager.rotatePeerIdentity(peerUserId);
+  } catch (_) {
+    // No bundle / inconsistent bundle / transport down: leave trust alone.
   }
+}
 
 /// One-line cause for encryption failures: the exception type plus the head
 /// of its message. Libsignal/transport messages carry no key material, so
@@ -60,6 +62,38 @@ class E2eeEncryptionException implements Exception {
 String _shortCause(Object e) {
   final text = e.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
   return text.length <= 160 ? text : '${text.substring(0, 160)}…';
+}
+
+/// Whether a failed decrypt should trigger automatic identity recovery.
+///
+/// Recovery is deliberately narrow: replacing the trusted peer identity also
+/// drops the Signal session, and the session holds the retained Double
+/// Ratchet keys needed to decrypt history. A stale single message must never
+/// cause that destruction.
+const _decryptFailuresBeforeRecovery = 2;
+
+enum E2eeIdentityRecoveryAction { none, rotate }
+
+/// Decides whether [error] justifies automatic identity recovery.
+///
+/// Only live deliveries are eligible, and only after consecutive failures for
+/// the same peer. Trust/session errors (`UntrustedIdentity`, `NoSession`)
+/// can indicate a genuine reinstall; MAC, message, key, format, duplicate,
+/// and transport errors must not touch trust.
+@visibleForTesting
+E2eeIdentityRecoveryAction recoveryActionForDecryptError({
+  required Object error,
+  required int consecutiveFailures,
+  required bool isLiveDelivery,
+}) {
+  if (!isLiveDelivery || consecutiveFailures < _decryptFailuresBeforeRecovery) {
+    return E2eeIdentityRecoveryAction.none;
+  }
+  final name = error.runtimeType.toString();
+  if (name.contains('UntrustedIdentity') || name.contains('NoSession')) {
+    return E2eeIdentityRecoveryAction.rotate;
+  }
+  return E2eeIdentityRecoveryAction.none;
 }
 
 /// High-level E2EE facade used by the chat layer.
@@ -73,6 +107,46 @@ class E2eeService {
 
   final Map<String, E2eeManager> _managers = {};
   final Random _random = Random.secure();
+
+  /// Consecutive decrypt failures by "$currentUserId:$peerUserId". Success
+  /// resets the counter; history loads never arm recovery.
+  final Map<String, int> _consecutiveDecryptFailures = {};
+
+  /// Durable decrypted-message stores, one per local user. Disk hydration
+  /// lets restarts, history pagination, and group reopens reuse the first
+  /// successful result instead of consuming an already-used ratchet key.
+  final Map<String, DecryptedMessageStore> _durablePlaintextStores = {};
+
+  @visibleForTesting
+  DecryptedMessageLoader? debugLoadDecryptedMessages;
+  @visibleForTesting
+  DecryptedMessageSaver? debugSaveDecryptedMessages;
+  @visibleForTesting
+  Future<String> Function(String senderId, int cipherType, String cipherBody)?
+      debugDecryptCiphertext;
+  @visibleForTesting
+  Future<String> Function({
+    required String groupId,
+    required String senderId,
+    required String cipherBody,
+    String? distributionB64,
+  })? debugDecryptGroupCiphertext;
+  @visibleForTesting
+  Future<bool> Function(String currentUserId, String senderId)?
+      debugRotatePeerIdentity;
+
+  /// Resets process-local decrypt memoization, durable-store hydration, and
+  /// failure counters for tests. Persisted backend fixtures are left intact
+  /// so a test can simulate an app restart by clearing process state only.
+  @visibleForTesting
+  void debugResetDecryptTestState() {
+    _plaintextCache.clear();
+    _decryptInFlight.clear();
+    _groupDecryptInFlight.clear();
+    _durablePlaintextStores.clear();
+    _consecutiveDecryptFailures.clear();
+    _pendingOwnPlaintext.clear();
+  }
 
   // A Signal ciphertext can be decrypted exactly once — the Double Ratchet
   // consumes the message key on first use. The same message arrives via the
@@ -88,12 +162,117 @@ class E2eeService {
   // callers share the single real decrypt instead of racing it.
   final Map<String, Future<Message>> _decryptInFlight = {};
 
+  // Group sender-key ciphertexts are also consumable, and a live delivery
+  // can race a history reload for the same row.
+  final Map<String, Future<String>> _groupDecryptInFlight = {};
+
   String? _plaintextFor(String cacheKey) => _plaintextCache[cacheKey];
 
   void _cachePlaintext(String cacheKey, String plaintext) {
     _plaintextCache[cacheKey] = plaintext;
     while (_plaintextCache.length > _maxCachedPlaintexts) {
       _plaintextCache.remove(_plaintextCache.keys.first);
+    }
+  }
+
+  DecryptedMessageStore _durableStore(String userId) {
+    return _durablePlaintextStores.putIfAbsent(
+      userId,
+      () => DecryptedMessageStore(
+        loadAll: debugLoadDecryptedMessages ??
+            LocalStorageService().getDecryptedMessages,
+        saveAll: debugSaveDecryptedMessages ??
+            LocalStorageService().saveDecryptedMessages,
+      ),
+    );
+  }
+
+  Future<DecryptedMessageRecord?> _durableRecord(
+    String userId,
+    String messageId,
+  ) async {
+    try {
+      return await _durableStore(userId).read(userId, messageId);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Message _applyDurableRecord(
+    Message message,
+    DecryptedMessageRecord record,
+  ) {
+    final applied = _applyDecryptedPlaintext(message, record.plaintext);
+    if (message.isTextMessage) return applied;
+    if ((record.mediaKey?.isNotEmpty ?? false) &&
+        (record.mediaNonce?.isNotEmpty ?? false)) {
+      return applied.copyWith(
+        mediaKey: record.mediaKey,
+        mediaNonce: record.mediaNonce,
+      );
+    }
+    return applied;
+  }
+
+  Future<void> _rememberDecryptedPlaintext({
+    required String currentUserId,
+    required Message message,
+    required String plaintext,
+  }) async {
+    _cachePlaintext(message.id, plaintext);
+    String? mediaKey;
+    String? mediaNonce;
+    if (!message.isTextMessage) {
+      final material = _mediaMaterialFor(plaintext);
+      mediaKey = material.mediaKey;
+      mediaNonce = material.mediaNonce;
+      if (mediaKey == null || mediaNonce == null) return;
+    }
+    await _writeDurableRecord(
+      currentUserId: currentUserId,
+      messageId: message.id,
+      plaintext: plaintext,
+      mediaKey: mediaKey,
+      mediaNonce: mediaNonce,
+    );
+  }
+
+  Future<void> _writeDurableRecord({
+    required String currentUserId,
+    required String messageId,
+    required String plaintext,
+    String? mediaKey,
+    String? mediaNonce,
+  }) async {
+    try {
+      await _durableStore(currentUserId).write(
+        currentUserId,
+        messageId,
+        DecryptedMessageRecord(
+          plaintext: plaintext,
+          mediaKey: mediaKey,
+          mediaNonce: mediaNonce,
+        ),
+      );
+    } catch (_) {
+      // Durability is best-effort. The in-memory memo still serves this
+      // process; a later successful decrypt can persist the record.
+    }
+  }
+
+  ({String? mediaKey, String? mediaNonce}) _mediaMaterialFor(
+    String envelopeJson,
+  ) {
+    try {
+      final envelope = jsonDecode(envelopeJson) as Map<String, dynamic>;
+      final mediaKey = envelope['k'];
+      final mediaNonce = envelope['iv'];
+      if (mediaKey is! String || mediaNonce is! String) {
+        return (mediaKey: null, mediaNonce: null);
+      }
+      return (mediaKey: mediaKey, mediaNonce: mediaNonce);
+    } catch (_) {
+      return (mediaKey: null, mediaNonce: null);
     }
   }
 
@@ -108,9 +287,30 @@ class E2eeService {
   final Map<String, List<String>> _pendingOwnPlaintext = {};
 
   /// Remembers [plaintext] (or a media-envelope JSON string) for the message
-  /// the server stored under [serverMessageId].
-  void cacheOwnPlaintext(String serverMessageId, String plaintext) {
+  /// the server stored under [serverMessageId]. The result is also written to
+  /// the encrypted durable store so our own history resolves after a restart.
+  Future<void> cacheOwnPlaintext(
+    String serverMessageId,
+    String plaintext, {
+    required String currentUserId,
+    bool isMediaEnvelope = false,
+  }) async {
     _cachePlaintext(serverMessageId, plaintext);
+    String? mediaKey;
+    String? mediaNonce;
+    if (isMediaEnvelope) {
+      final material = _mediaMaterialFor(plaintext);
+      mediaKey = material.mediaKey;
+      mediaNonce = material.mediaNonce;
+      if (mediaKey == null || mediaNonce == null) return;
+    }
+    await _writeDurableRecord(
+      currentUserId: currentUserId,
+      messageId: serverMessageId,
+      plaintext: plaintext,
+      mediaKey: mediaKey,
+      mediaNonce: mediaNonce,
+    );
   }
 
   /// Stages an outgoing plaintext whose server id is not known yet (WS path).
@@ -131,14 +331,35 @@ class E2eeService {
 
   /// Commits the oldest staged plaintext for [receiverId] under
   /// [serverMessageId]. Returns the committed plaintext, or null when nothing
-  /// was staged (e.g. the message was sent from another device).
-  String? commitOwnPlaintext(String serverMessageId, String receiverId) {
+  /// was staged (e.g. the message was sent from another device). A durable
+  /// record from an earlier process can satisfy the lookup after a restart.
+  Future<String?> commitOwnPlaintext(
+    String serverMessageId,
+    String receiverId, {
+    required String currentUserId,
+  }) async {
     final pending = _pendingOwnPlaintext[receiverId];
-    if (pending == null || pending.isEmpty) return _plaintextFor(serverMessageId);
-    final plaintext = pending.removeAt(0);
-    if (pending.isEmpty) _pendingOwnPlaintext.remove(receiverId);
-    _cachePlaintext(serverMessageId, plaintext);
-    return plaintext;
+    if (pending != null && pending.isNotEmpty) {
+      final plaintext = pending.removeAt(0);
+      if (pending.isEmpty) _pendingOwnPlaintext.remove(receiverId);
+      _cachePlaintext(serverMessageId, plaintext);
+      final material = _mediaMaterialFor(plaintext);
+      await _writeDurableRecord(
+        currentUserId: currentUserId,
+        messageId: serverMessageId,
+        plaintext: plaintext,
+        mediaKey: material.mediaKey,
+        mediaNonce: material.mediaNonce,
+      );
+      return plaintext;
+    }
+
+    final remembered = _plaintextFor(serverMessageId);
+    if (remembered != null) return remembered;
+    final durable = await _durableRecord(currentUserId, serverMessageId);
+    if (durable == null) return null;
+    _cachePlaintext(serverMessageId, durable.plaintext);
+    return durable.plaintext;
   }
 
   /// Returns the manager for [userId], lazily creating and initializing its
@@ -177,8 +398,7 @@ class E2eeService {
         };
     try {
       final manager = await forUser(currentUserId);
-      return pack(
-          await _encryptWithRecovery(manager, receiverId, plaintext));
+      return pack(await _encryptWithRecovery(manager, receiverId, plaintext));
     } on E2eeEncryptionException {
       rethrow;
     } catch (e) {
@@ -295,8 +515,8 @@ class E2eeService {
   }) async {
     try {
       final manager = await forUser(currentUserId);
-      final encrypted = await _encryptWithRecovery(
-          manager, receiverId, jsonEncode(envelope));
+      final encrypted =
+          await _encryptWithRecovery(manager, receiverId, jsonEncode(envelope));
       return {
         'encryption': 'signal',
         'cipher_type': encrypted.type,
@@ -318,21 +538,36 @@ class E2eeService {
   /// / [Message.mediaNonce] fields used to decrypt the attachment.
   ///
   /// Safe to call repeatedly for the same message: the first successful
-  /// decryption is memoized, so later history fetches reuse the plaintext
-  /// instead of re-consuming Double Ratchet message keys (which would fail).
+  /// decryption is retained in memory and in the encrypted durable store, so
+  /// later history fetches and app restarts reuse the plaintext instead of
+  /// re-consuming Double Ratchet message keys (which would fail).
   Future<Message> decryptMessage(
     Message message, {
     required String currentUserId,
+    bool isLiveDelivery = false,
   }) async {
     if (message.encryption != 'signal' ||
         message.cipherBody == null ||
         message.cipherType == null) {
+      // A cached row can carry decrypted text without its media envelope: the
+      // envelope is transient on Message, while the ciphertext is gone. Reuse
+      // the durable record to restore the media key without a Signal decrypt.
+      final durablePlaintext = await _durableRecord(currentUserId, message.id);
+      if (durablePlaintext != null) {
+        return _applyDurableRecord(message, durablePlaintext);
+      }
       return message;
     }
 
     final cached = _plaintextFor(message.id);
     if (cached != null) {
       return _applyDecryptedPlaintext(message, cached);
+    }
+    final durable = await _durableRecord(currentUserId, message.id);
+    if (durable != null) {
+      final applied = _applyDurableRecord(message, durable);
+      _cachePlaintext(message.id, durable.plaintext);
+      return applied;
     }
 
     // Our own messages are encrypted for the peer, so there is no session
@@ -350,7 +585,11 @@ class E2eeService {
     // so no race is possible here): one real decrypt, shared result.
     final ongoing = _decryptInFlight[message.id];
     if (ongoing != null) return ongoing;
-    final future = _decryptOnce(message, currentUserId: currentUserId);
+    final future = _decryptOnce(
+      message,
+      currentUserId: currentUserId,
+      isLiveDelivery: isLiveDelivery,
+    );
     _decryptInFlight[message.id] = future;
     try {
       return await future;
@@ -363,63 +602,82 @@ class E2eeService {
   Future<Message> _decryptOnce(
     Message message, {
     required String currentUserId,
+    required bool isLiveDelivery,
   }) async {
+    final failureKey = '$currentUserId:${message.senderId}';
+    E2eeManager? manager;
     try {
-      final manager = await forUser(currentUserId);
-      final plaintext = await manager.decrypt(
-        message.senderId,
-        message.cipherType!,
-        message.cipherBody!,
+      final testDecrypt = debugDecryptCiphertext;
+      final String plaintext;
+      if (testDecrypt != null) {
+        plaintext = await testDecrypt(
+          message.senderId,
+          message.cipherType!,
+          message.cipherBody!,
+        );
+      } else {
+        manager = await forUser(currentUserId);
+        plaintext = await manager.decrypt(
+          message.senderId,
+          message.cipherType!,
+          message.cipherBody!,
+        );
+      }
+      await _rememberDecryptedPlaintext(
+        currentUserId: currentUserId,
+        message: message,
+        plaintext: plaintext,
       );
-      _cachePlaintext(message.id, plaintext);
+      _consecutiveDecryptFailures.remove(failureKey);
       return _applyDecryptedPlaintext(message, plaintext);
     } catch (e) {
       // Never log content or ciphertext — only the failure class and the
       // sender, which is enough to distinguish a stale session (recoverable)
-      // from transport/format corruption (not recoverable).
+      // from transport/format corruption (not recoverable). Only live
+      // deliveries advance the recovery streak: stale history rows are
+      // evidence about themselves, not about current session health.
+      var consecutiveFailures = 0;
+      if (isLiveDelivery) {
+        consecutiveFailures =
+            (_consecutiveDecryptFailures[failureKey] ?? 0) + 1;
+        _consecutiveDecryptFailures[failureKey] = consecutiveFailures;
+      }
       debugPrint(
         '[E2EE] decrypt failed msg=${message.id} '
         'from=${message.senderId} type=${message.cipherType} '
-        'error=${e.runtimeType}',
+        'error=${e.runtimeType} consecutive=$consecutiveFailures',
       );
-      // Self-heal a stale session (e.g. the peer re-registered their
-      // identity after a reinstall): adopt their current published identity
-      // when it changed and drop the broken session so the next exchange
-      // re-establishes. Resetting the session alone is NOT enough — X3DH
-      // keeps failing against the stale trusted identity, which is exactly
-      // how a chat gets permanently stuck on "unable to decrypt".
-      // Only for crypto-state errors — touching trust on duplicate, format
-      // or transport errors would brick all future messages.
-      if (_isSessionStateError(e)) {
+      // Self-heal only when there is repeated live evidence of a stale peer
+      // identity/session (for example after a reinstall). Rotation also drops
+      // the local session and its retained ratchet keys, so a single stale
+      // history row must never trigger it.
+      if (recoveryActionForDecryptError(
+            error: e,
+            consecutiveFailures: consecutiveFailures,
+            isLiveDelivery: isLiveDelivery,
+          ) ==
+          E2eeIdentityRecoveryAction.rotate) {
         debugPrint('[E2EE] rotating stale identity for ${message.senderId}');
         try {
-          await (await forUser(currentUserId))
-              .rotatePeerIdentity(message.senderId);
+          final testRotate = debugRotatePeerIdentity;
+          if (testRotate != null) {
+            await testRotate(currentUserId, message.senderId);
+          } else {
+            await (manager ?? await forUser(currentUserId))
+                .rotatePeerIdentity(message.senderId);
+          }
         } catch (_) {
           // Best-effort recovery; the placeholder below is returned regardless.
         }
+        // Recovery consumes the streak: another rotation needs two fresh
+        // consecutive live failures, not one old streak.
+        _consecutiveDecryptFailures.remove(failureKey);
       }
       return message.copyWith(
         content: Message.decryptionFailedContent,
         encryption: 'none',
       );
     }
-  }
-
-  /// Whether [e] signals stale Signal session state (safe to drop the
-  /// session) as opposed to a duplicate, malformed or out-of-order payload
-  /// (where dropping the session would destroy future messages too).
-  bool _isSessionStateError(Object e) {
-    if (e is FormatException || e is RangeError || e is ArgumentError) {
-      return false;
-    }
-    final name = e.runtimeType.toString();
-    return name.contains('UntrustedIdentity') ||
-        name.contains('NoSession') ||
-        name.contains('InvalidMessage') ||
-        name.contains('InvalidMac') ||
-        name.contains('InvalidKey') ||
-        name.contains('LegacyMessage');
   }
 
   /// Applies an already-known media envelope (committed at send time) to
@@ -462,7 +720,7 @@ class E2eeService {
       );
     } catch (e) {
       return message.copyWith(
-        content: '🔒 Unable to decrypt media',
+        content: Message.decryptionFailedMediaContent,
         encryption: 'none',
         cipherBody: null,
         cipherType: null,
@@ -472,8 +730,8 @@ class E2eeService {
 
   /// Memoized group-message decrypt. A sender-key ciphertext can only be
   /// decrypted once, and group history is re-fetched on every screen open —
-  /// so the first successful plaintext is remembered per message id, exactly
-  /// like [decryptMessage].
+  /// so the first successful plaintext is retained in memory and in the
+  /// encrypted durable store, exactly like [decryptMessage].
   Future<Message> decryptGroupMessage(
     Message message, {
     required String currentUserId,
@@ -481,34 +739,42 @@ class E2eeService {
     if (message.encryption != 'sgkey' ||
         message.cipherBody == null ||
         message.groupId == null) {
+      final durablePlaintext = await _durableRecord(currentUserId, message.id);
+      if (durablePlaintext != null) {
+        return _groupMessageFromPlaintext(message, durablePlaintext.plaintext);
+      }
       return message;
     }
 
     final cached = _plaintextFor(message.id);
     if (cached != null) {
-      return message.copyWith(
-        content: cached,
-        encryption: 'none',
-        cipherBody: null,
-        cipherType: null,
-      );
+      return _groupMessageFromPlaintext(message, cached);
+    }
+    final durable = await _durableRecord(currentUserId, message.id);
+    if (durable != null) {
+      final applied = _groupMessageFromPlaintext(message, durable.plaintext);
+      _cachePlaintext(message.id, durable.plaintext);
+      return applied;
     }
 
+    final ongoing = _groupDecryptInFlight[message.id];
+    if (ongoing != null) {
+      return _groupMessageFromPlaintext(message, await ongoing);
+    }
+    final future = _decryptGroupPlaintext(
+      currentUserId: currentUserId,
+      message: message,
+    );
+    _groupDecryptInFlight[message.id] = future;
     try {
-      final plaintext = await decryptGroupText(
-        currentUserId: currentUserId,
-        groupId: message.groupId!,
-        senderId: message.senderId,
-        cipherBody: message.cipherBody!,
-        distributionB64: message.distribution,
-      );
+      final plaintext = await future;
       _cachePlaintext(message.id, plaintext);
-      return message.copyWith(
-        content: plaintext,
-        encryption: 'none',
-        cipherBody: null,
-        cipherType: null,
+      await _writeDurableRecord(
+        currentUserId: currentUserId,
+        messageId: message.id,
+        plaintext: plaintext,
       );
+      return _groupMessageFromPlaintext(message, plaintext);
     } catch (e) {
       debugPrint(
         '[E2EE] group decrypt failed msg=${message.id} '
@@ -518,7 +784,40 @@ class E2eeService {
         content: Message.decryptionFailedContent,
         encryption: 'none',
       );
+    } finally {
+      _groupDecryptInFlight.remove(message.id);
     }
+  }
+
+  Message _groupMessageFromPlaintext(Message message, String plaintext) {
+    return message.copyWith(
+      content: plaintext,
+      encryption: 'none',
+      cipherBody: null,
+      cipherType: null,
+    );
+  }
+
+  Future<String> _decryptGroupPlaintext({
+    required String currentUserId,
+    required Message message,
+  }) {
+    final testDecrypt = debugDecryptGroupCiphertext;
+    if (testDecrypt != null) {
+      return testDecrypt(
+        groupId: message.groupId!,
+        senderId: message.senderId,
+        cipherBody: message.cipherBody!,
+        distributionB64: message.distribution,
+      );
+    }
+    return decryptGroupText(
+      currentUserId: currentUserId,
+      groupId: message.groupId!,
+      senderId: message.senderId,
+      cipherBody: message.cipherBody!,
+      distributionB64: message.distribution,
+    );
   }
 
   /// Decrypts an encrypted media blob with the key/nonce from a decrypted
@@ -545,6 +844,13 @@ class E2eeService {
   /// identity does not survive their account on the device.
   Future<void> destroyUserState(String userId) async {
     _managers.remove(userId);
+    _durablePlaintextStores.remove(userId);
+    _consecutiveDecryptFailures.removeWhere(
+      (key, _) => key.startsWith('$userId:'),
+    );
+    // Server message ids are globally unique, but do not leave the logged-out
+    // account's plaintexts in process memory.
+    _plaintextCache.clear();
     try {
       await Hive.deleteBoxFromDisk('securechat_e2ee_$userId');
     } catch (_) {

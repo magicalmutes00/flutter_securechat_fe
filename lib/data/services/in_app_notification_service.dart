@@ -147,8 +147,11 @@ class InAppNotificationService with WidgetsBindingObserver {
       } else {
         if (me != null) {
           final wasEncrypted = message.encryption == 'signal';
-          message = await E2eeService.instance
-              .decryptMessage(message, currentUserId: me);
+          message = await E2eeService.instance.decryptMessage(
+            message,
+            currentUserId: me,
+            isLiveDelivery: true,
+          );
           // The peer's session with us is stale — and they see no error,
           // because their encrypt succeeds locally. Ask them to drop it so
           // their next send re-establishes fresh; throttled per peer.
@@ -436,8 +439,7 @@ class _NotificationBannerCardState extends State<_NotificationBannerCard>
               color: context.colors.surface,
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: context.colors.outlineVariant),
-              boxShadow:
-                  AppShadows.pop(Theme.of(context).brightness),
+              boxShadow: AppShadows.pop(Theme.of(context).brightness),
             ),
             child: InkWell(
               borderRadius: BorderRadius.circular(16),

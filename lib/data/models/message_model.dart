@@ -7,7 +7,8 @@ class Message extends Equatable {
   static const String decryptionFailedContent = '🔒 Unable to decrypt message';
 
   /// Same, for a media key envelope that cannot be decrypted.
-  static const String decryptionFailedMediaContent = '🔒 Unable to decrypt media';
+  static const String decryptionFailedMediaContent =
+      '🔒 Unable to decrypt media';
 
   final String id;
   final String senderId;
@@ -39,7 +40,8 @@ class Message extends Equatable {
   final String? distribution;
 
   // Transient AES-256-GCM media keys, populated in-memory after decrypting the
-  // media envelope. Never serialized to the server or local cache.
+  // media envelope. They are never serialized with messages; after a restart
+  // they are restored from the separate encrypted durable plaintext store.
   final String? mediaKey;
   final String? mediaNonce;
 
@@ -173,9 +175,8 @@ class Message extends Equatable {
       distribution: distribution ?? this.distribution,
       mediaKey: mediaKey ?? this.mediaKey,
       mediaNonce: mediaNonce ?? this.mediaNonce,
-      uploadProgress: clearUploadProgress
-          ? null
-          : (uploadProgress ?? this.uploadProgress),
+      uploadProgress:
+          clearUploadProgress ? null : (uploadProgress ?? this.uploadProgress),
     );
   }
 

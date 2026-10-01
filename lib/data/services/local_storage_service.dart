@@ -5,6 +5,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'at_rest_key.dart';
+import 'decrypted_message_store.dart';
 
 /// A record of cached conversations for a user, returned by
 /// [LocalStorageService.getConversations].
@@ -55,6 +56,8 @@ class LocalStorageService {
   String _lastSyncKey(String userId) => '$userId:last_sync';
 
   String _outboxKey(String userId) => '$userId:outbox';
+
+  String _decryptedMessagesKey(String userId) => '$userId:decrypted_plaintexts';
 
   /// Returns the messages cached for a single 1:1 conversation (old->new).
   List<Message> getMessages(String userId, String peerUserId) {
@@ -110,6 +113,46 @@ class LocalStorageService {
     }
     existing[idx] = replacement;
     await saveMessages(userId, peerUserId, existing);
+  }
+
+  /// Returns durable decrypted-message records for [userId], keyed by server
+  /// message id. Malformed records are skipped rather than failing the whole
+  /// load: one corrupt entry must not hide every other retained plaintext.
+  Future<Map<String, DecryptedMessageRecord>> getDecryptedMessages(
+    String userId,
+  ) async {
+    final raw = _db.get(_decryptedMessagesKey(userId));
+    if (raw == null || raw.isEmpty) return {};
+
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return {};
+      final recordsRaw = decoded['records'];
+      if (recordsRaw is! Map) return {};
+
+      final records = <String, DecryptedMessageRecord>{};
+      recordsRaw.forEach((key, value) {
+        if (key is! String || key.isEmpty) return;
+        final record = DecryptedMessageRecord.tryFromJson(value);
+        if (record != null) records[key] = record;
+      });
+      return records;
+    } catch (_) {
+      return {};
+    }
+  }
+
+  /// Replaces the durable decrypted-message records for [userId]. The box is
+  /// encrypted at rest, and callers bound the map before writing.
+  Future<void> saveDecryptedMessages(
+    String userId,
+    Map<String, DecryptedMessageRecord> records,
+  ) async {
+    final encoded = jsonEncode({
+      'version': 1,
+      'records': records.map((id, record) => MapEntry(id, record.toJson())),
+    });
+    await _db.put(_decryptedMessagesKey(userId), encoded);
   }
 
   /// Persists the conversation list and per-conversation last messages.
