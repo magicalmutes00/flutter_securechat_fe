@@ -6,6 +6,9 @@ class Message extends Equatable {
   /// reads it back to detect live decryption failures.
   static const String decryptionFailedContent = '🔒 Unable to decrypt message';
 
+  /// Same, for a media key envelope that cannot be decrypted.
+  static const String decryptionFailedMediaContent = '🔒 Unable to decrypt media';
+
   final String id;
   final String senderId;
   final String receiverId;
@@ -190,6 +193,16 @@ class Message extends Equatable {
   /// marks only this bubble — never the whole conversation.
   bool get isSending => status == 'sending';
   bool get isFailed => status == 'failed';
+
+  /// Whether this bubble is a decryption-failure placeholder. Such rows must
+  /// never be treated as ground truth by the cache: persisting one cements a
+  /// transient failure forever (later loads serve it without retrying the
+  /// still-good server ciphertext), and merges must let a fresh good decrypt
+  /// replace it. The legacy pre-encryption notice is NOT a failure — it is
+  /// stable truth and caches normally.
+  bool get isDecryptionFailure =>
+      content == decryptionFailedContent ||
+      content == decryptionFailedMediaContent;
   bool get isGroupMessage => groupId != null;
 
   @override

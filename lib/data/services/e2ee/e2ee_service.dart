@@ -81,6 +81,13 @@ class E2eeService {
   static const _maxCachedPlaintexts = 1000;
   final Map<String, String> _plaintextCache = {};
 
+  // Concurrent decrypts of the same ciphertext, keyed by message id. A live
+  // socket delivery and a history reload routinely attempt the same message
+  // at once (re-enter a chat as a message arrives); Double Ratchet keys are
+  // consumable, so the loser fails and cements a placeholder. Coalesced
+  // callers share the single real decrypt instead of racing it.
+  final Map<String, Future<Message>> _decryptInFlight = {};
+
   String? _plaintextFor(String cacheKey) => _plaintextCache[cacheKey];
 
   void _cachePlaintext(String cacheKey, String plaintext) {
@@ -339,6 +346,24 @@ class E2eeService {
       );
     }
 
+    // Coalesce concurrent attempts (check and registration are synchronous,
+    // so no race is possible here): one real decrypt, shared result.
+    final ongoing = _decryptInFlight[message.id];
+    if (ongoing != null) return ongoing;
+    final future = _decryptOnce(message, currentUserId: currentUserId);
+    _decryptInFlight[message.id] = future;
+    try {
+      return await future;
+    } finally {
+      _decryptInFlight.remove(message.id);
+    }
+  }
+
+  /// The single real decrypt behind [decryptMessage]'s coalescing.
+  Future<Message> _decryptOnce(
+    Message message, {
+    required String currentUserId,
+  }) async {
     try {
       final manager = await forUser(currentUserId);
       final plaintext = await manager.decrypt(

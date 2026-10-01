@@ -144,6 +144,17 @@ String _apiErrorReason(ApiException e) {
   return e.message;
 }
 
+/// History-load merge rule for one message id: a fresh good decrypt replaces
+/// a stuck failure placeholder (planted by an older transient failure);
+/// anything else keeps the existing row — including optimistic temp bubbles,
+/// which resolve via the ack swap, never here.
+Message mergeHistoryMessage(Message existing, Message incoming) {
+  if (existing.isDecryptionFailure && !incoming.isDecryptionFailure) {
+    return incoming;
+  }
+  return existing;
+}
+
 /// Extracts the hosted file id from a server file URL (`/api/files/<id>`).
 /// Returns null for local paths and anything else — only server URLs are
 /// ever passed to the file-delete endpoint.
@@ -414,17 +425,19 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         decryptedMessages.add(decrypted);
       }
 
-      await _localStorage.saveMessages(
-          currentUserId, event.userId, decryptedMessages);
-
-      final existingIds = state.messages.map((m) => m.id).toSet();
-      final uniqueNewMessages =
-          decryptedMessages.where((m) => !existingIds.contains(m.id)).toList();
+      // Never persist failure placeholders: a transiently-failed decrypt
+      // cached as truth would be served on every later load without ever
+      // retrying the still-good server ciphertext.
+      await _localStorage.saveMessages(currentUserId, event.userId,
+          decryptedMessages.where((m) => !m.isDecryptionFailure).toList());
 
       final allMessages = [...state.messages];
-      for (final msg in uniqueNewMessages) {
-        if (!allMessages.any((m) => m.id == msg.id)) {
+      for (final msg in decryptedMessages) {
+        final idx = allMessages.indexWhere((m) => m.id == msg.id);
+        if (idx == -1) {
           allMessages.add(msg);
+        } else {
+          allMessages[idx] = mergeHistoryMessage(allMessages[idx], msg);
         }
       }
       allMessages.sort((a, b) => a.createdAt.compareTo(b.createdAt));
@@ -1248,7 +1261,13 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ));
 
     if (currentUserId.isNotEmpty) {
-      _localStorage.addMessage(currentUserId, message.senderId, message);
+      // Same no-placeholders rule as history loads: a live message that
+      // failed to decrypt stays out of the cache so later loads retry the
+      // server ciphertext instead of serving the failure as truth. (The
+      // conversation preview above still references it honestly.)
+      if (!message.isDecryptionFailure) {
+        _localStorage.addMessage(currentUserId, message.senderId, message);
+      }
       _localStorage.saveConversations(
           currentUserId, updatedConversations, newLastMessages);
     }

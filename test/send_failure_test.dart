@@ -114,6 +114,100 @@ void main() {
     });
   });
 
+  group('Message.isDecryptionFailure', () {
+    Message textMessage() => Message(
+          id: 'm1',
+          senderId: 'user-a',
+          receiverId: 'user-b',
+          messageType: 'text',
+          content: 'hi',
+          status: 'sent',
+          createdAt: DateTime.utc(2026, 1, 1),
+        );
+
+    test('matches both failure placeholders only', () {
+      expect(
+        textMessage()
+            .copyWith(
+              content: Message.decryptionFailedContent,
+              status: 'sent',
+            )
+            .isDecryptionFailure,
+        isTrue,
+      );
+      expect(
+        textMessage()
+            .copyWith(content: Message.decryptionFailedMediaContent)
+            .isDecryptionFailure,
+        isTrue,
+      );
+      expect(textMessage().isDecryptionFailure, isFalse);
+    });
+
+    test('legacy pre-encryption notice is stable truth, not failure', () {
+      expect(
+        textMessage()
+            .copyWith(
+              content: '🔒 Encrypted message from before encryption was removed',
+            )
+            .isDecryptionFailure,
+        isFalse,
+      );
+    });
+
+    test('send states are not decryption failures', () {
+      expect(textMessage().copyWith(status: 'sending').isDecryptionFailure,
+          isFalse);
+      expect(textMessage().copyWith(status: 'failed').isDecryptionFailure,
+          isFalse);
+    });
+  });
+
+  group('mergeHistoryMessage', () {
+    Message stored({String id = 'm1', String content = 'hi'}) => Message(
+          id: id,
+          senderId: 'user-a',
+          receiverId: 'user-b',
+          messageType: 'text',
+          content: content,
+          status: 'sent',
+          createdAt: DateTime.utc(2026, 1, 1),
+        );
+
+    test('fresh good decrypt heals a stuck placeholder', () {
+      final healed = mergeHistoryMessage(
+        stored(content: Message.decryptionFailedContent),
+        stored(content: 'hello there'),
+      );
+      expect(healed.content, 'hello there');
+      expect(healed.isDecryptionFailure, isFalse);
+    });
+
+    test('never replaces good rows with placeholders', () {
+      final kept = mergeHistoryMessage(
+        stored(content: 'hello there'),
+        stored(content: Message.decryptionFailedContent),
+      );
+      expect(kept.content, 'hello there');
+    });
+
+    test('placeholder over placeholder keeps the existing row', () {
+      final kept = mergeHistoryMessage(
+        stored(content: Message.decryptionFailedContent),
+        stored(content: Message.decryptionFailedContent),
+      );
+      expect(kept.isDecryptionFailure, isTrue);
+    });
+
+    test('good over good keeps the existing row', () {
+      final kept = mergeHistoryMessage(
+        stored(content: 'cached copy'),
+        stored(content: 'server copy'),
+      );
+      expect(kept.content, 'cached copy');
+    });
+  });
+
   group('fileIdOfUrl', () {
     test('extracts the id from server file URLs only', () {
       expect(
