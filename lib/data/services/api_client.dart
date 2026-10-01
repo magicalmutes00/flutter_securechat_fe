@@ -4,6 +4,28 @@ import 'package:dio/dio.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../core/constants/app_constants.dart';
 
+/// Typed server failure. Carries the machine-readable `code` the backend puts
+/// in error bodies (e.g. `file_too_large`) plus the raw server message, so
+/// the UI can show actionable wording instead of Dio's generic
+/// "status code of 500" text. The backend's `request_id` is preserved for
+/// matching a screenshot to a server log line.
+class ApiException implements Exception {
+  const ApiException({
+    this.statusCode,
+    this.code,
+    this.requestId,
+    required this.message,
+  });
+
+  final int? statusCode;
+  final String? code;
+  final String? requestId;
+  final String message;
+
+  @override
+  String toString() => 'ApiException($statusCode/$code): $message';
+}
+
 class ApiClient {
   static final ApiClient _instance = ApiClient._internal();
   factory ApiClient() => _instance;
@@ -405,8 +427,37 @@ class ApiClient {
   }
 
   Future<Map<String, dynamic>> sendMessage(Map<String, dynamic> data) async {
-    final response = await _dio.post('/api/chat/message', data: data);
-    return response.data as Map<String, dynamic>;
+    try {
+      final response = await _dio.post('/api/chat/message', data: data);
+      return response.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      throw _sendError(e, 'Failed to send message');
+    }
+  }
+
+  /// Converts a Dio failure on a send-path call into [ApiException], lifting
+  /// the backend's `code`/`message`/`request_id` out of the response body.
+  /// Non-Dio errors pass through untouched.
+  ApiException _sendError(DioException e, String fallback) {
+    final data = e.response?.data;
+    String? code;
+    String? message;
+    String? requestId;
+    if (data is Map) {
+      code = data['code'] as String?;
+      final serverMessage = data['message'] ?? data['error'];
+      if (serverMessage is String && serverMessage.isNotEmpty) {
+        message = serverMessage;
+      }
+      final rid = data['request_id'];
+      if (rid is String && rid.isNotEmpty) requestId = rid;
+    }
+    return ApiException(
+      statusCode: e.response?.statusCode,
+      code: code,
+      requestId: requestId,
+      message: message ?? e.message ?? fallback,
+    );
   }
 
   Future<Map<String, dynamic>> updateMessageStatus(
@@ -436,15 +487,19 @@ class ApiClient {
     final formData = FormData.fromMap({
       'file': await MultipartFile.fromFile(filePath, filename: filename),
     });
-    final response = await _dio.post(
-      '/api/files/upload/$type',
-      data: formData,
-      options: Options(
-        headers: {'Content-Type': 'multipart/form-data'},
-      ),
-      onSendProgress: onSendProgress,
-    );
-    return response.data as Map<String, dynamic>;
+    try {
+      final response = await _dio.post(
+        '/api/files/upload/$type',
+        data: formData,
+        options: Options(
+          headers: {'Content-Type': 'multipart/form-data'},
+        ),
+        onSendProgress: onSendProgress,
+      );
+      return response.data as Map<String, dynamic>;
+    } on DioException catch (e) {
+      throw _sendError(e, 'Failed to upload file');
+    }
   }
 
   /// Downloads a file (e.g. an encrypted media blob) with authentication.

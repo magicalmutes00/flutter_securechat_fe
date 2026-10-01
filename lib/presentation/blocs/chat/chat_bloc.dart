@@ -96,6 +96,9 @@ class _DispatchHeldFile extends ChatEvent {
 String sendFailureReason(Object e) {
   if (e is MediaValidationException) return e.message;
   if (e is E2eeEncryptionException) return e.message;
+  // Coded server failures: the backend names the exact problem, so the
+  // bubble can too (e.g. "too large" instead of "status code of 413").
+  if (e is ApiException) return _apiErrorReason(e);
   final text = e.toString().toLowerCase();
   if (text.contains('413') ||
       text.contains('too large') ||
@@ -111,6 +114,34 @@ String sendFailureReason(Object e) {
     return 'No connection — the message was not sent. Try again when you are back online.';
   }
   return 'Could not send that attachment. Tap it to retry.';
+}
+
+/// Maps a coded backend failure to bubble wording. Unknown codes fall back
+/// to the server's own message — it names the problem better than a generic
+/// retry line, and the request id in the logs ties it to the exact failure.
+String _apiErrorReason(ApiException e) {
+  switch (e.code) {
+    case 'file_too_large':
+      return 'That file is too large to send.';
+    case 'extension_not_allowed':
+      return "That file type can't be sent.";
+    case 'content_mismatch':
+      return 'That file looks corrupt — try picking it again.';
+    case 'no_file':
+    case 'missing_boundary':
+    case 'invalid_content_type':
+      return 'The upload was malformed. Tap to retry.';
+    case 'unauthorized':
+      return 'Your session expired — please log in again.';
+    case 'upload_failed':
+    case 'internal_error':
+      return 'The server failed to handle that file. Tap to retry.';
+  }
+  if (e.statusCode == 413) return 'That file is too large to send.';
+  if (e.statusCode == 401) {
+    return 'Your session expired — please log in again.';
+  }
+  return e.message;
 }
 
 class ChatBloc extends Bloc<ChatEvent, ChatState> {

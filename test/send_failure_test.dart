@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:secure_chat/data/models/message_model.dart';
+import 'package:secure_chat/data/services/api_client.dart';
 import 'package:secure_chat/data/services/e2ee/e2ee_service.dart';
 import 'package:secure_chat/presentation/blocs/chat/chat_bloc.dart';
 import 'package:secure_chat/presentation/blocs/chat/chat_event.dart';
@@ -117,6 +118,67 @@ void main() {
       expect(
         sendFailureReason(Exception('Cloudinary upload failed: Invalid')),
         contains('Tap it to retry'),
+      );
+    });
+
+    test('coded server failures map to bubble wording', () {
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 413,
+          code: 'file_too_large',
+          message: 'File size exceeds maximum allowed size',
+        )),
+        'That file is too large to send.',
+      );
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 400,
+          code: 'extension_not_allowed',
+          message: 'File extension not allowed for image',
+        )),
+        "That file type can't be sent.",
+      );
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 400,
+          code: 'content_mismatch',
+          message: 'File content does not match its extension',
+        )),
+        contains('corrupt'),
+      );
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 401,
+          code: 'unauthorized',
+          message: 'Unauthorized',
+        )),
+        contains('log in'),
+      );
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 500,
+          code: 'upload_failed',
+          message: 'Internal server error',
+        )),
+        contains('Tap to retry'),
+      );
+    });
+
+    test('unknown codes fall back to the server message', () {
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 500,
+          code: 'something_new',
+          message: 'Weird new problem',
+        )),
+        'Weird new problem',
+      );
+      expect(
+        sendFailureReason(const ApiException(
+          statusCode: 413,
+          message: 'Too big',
+        )),
+        'That file is too large to send.',
       );
     });
   });
