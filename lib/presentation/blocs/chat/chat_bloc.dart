@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../data/models/message_model.dart';
@@ -7,6 +8,7 @@ import '../../../data/services/api_client.dart';
 import '../../../data/services/in_app_notification_service.dart';
 import '../../../data/services/local_storage_service.dart';
 import '../../../data/services/websocket_service.dart';
+import '../../../data/services/e2ee/e2ee_service.dart';
 import 'chat_event.dart';
 import 'chat_state.dart';
 
@@ -103,16 +105,27 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
 
     for (final message in pending) {
       try {
-        await _apiClient.sendMessage({
+        final encrypted = await E2eeService.instance.prepareOutgoingText(
+          currentUserId: currentUserId,
+          receiverId: message.receiverId,
+          plaintext: message.content,
+        );
+        final usesSignal = encrypted['encryption'] == 'signal';
+
+        final sent = await _apiClient.sendMessage({
           'receiver_id': message.receiverId,
           'message_type': message.messageType,
-          'content': message.content,
-          'encryption': 'none',
-          if (message.filePath != null) 'file_url': message.filePath,
-          if (message.fileName != null) 'file_name': message.fileName,
-          if (message.fileSize != null) 'file_size': message.fileSize,
-          if (message.mediaType != null) 'media_type': message.mediaType,
+          'content': usesSignal ? '' : message.content,
+          'encryption': encrypted['encryption'] as String? ?? 'none',
+          'cipher_type': encrypted['cipher_type'],
+          'cipher_body': encrypted['cipher_body'],
         });
+        // Remember our plaintext under the server id: history fetch can
+        // never Signal-decrypt our own messages (no session with ourselves).
+        final serverId = sent['id'] as String? ?? sent['_id'] as String?;
+        if (usesSignal && serverId != null && serverId.isNotEmpty) {
+          E2eeService.instance.cacheOwnPlaintext(serverId, message.content);
+        }
         await _localStorage.removeFromOutbox(currentUserId, message.id);
       } catch (_) {
         // Keep the message queued; a later reconnect will retry it.
@@ -163,9 +176,16 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         _localStorage.getMessages(currentUserId, event.userId);
 
     if (localMessages.isNotEmpty && !event.refresh) {
+      // Locally cached messages are stored decrypted, but re-decrypt defensively
+      // in case a previous session persisted ciphertext.
+      final decryptedLocal = <Message>[];
+      for (final m in localMessages) {
+        decryptedLocal.add(_asDisplayable(await E2eeService.instance
+            .decryptMessage(m, currentUserId: currentUserId)));
+      }
       emit(state.copyWith(
         status: ChatStatus.loaded,
-        messages: localMessages.map(_asDisplayable).toList(),
+        messages: decryptedLocal,
         hasMoreMessages: true,
       ));
     }
@@ -182,22 +202,26 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           .reversed
           .toList();
 
-      // Messages arrive as plaintext now; legacy E2EE-era ciphertext gets a
-      // notice bubble instead of rendering empty.
+      // Decrypt Signal-encrypted messages fetched from the server.
       final localById = {for (final m in localMessages) m.id: m};
       final decryptedMessages = <Message>[];
       for (final m in newMessages) {
-        var displayable = _asDisplayable(m);
-        // Never let a server re-fetch wipe a known-good local message
-        // (e.g. sent from another device) with an empty bubble.
-        if (displayable.senderId == currentUserId &&
-            displayable.content.isEmpty) {
-          final local = localById[displayable.id];
-          if (local != null && local.content.isNotEmpty) {
-            displayable = local;
+        var decrypted = _asDisplayable(await E2eeService.instance
+            .decryptMessage(m, currentUserId: currentUserId));
+        // Belt-and-braces: never let a server re-fetch wipe a known-good
+        // local plaintext (e.g. our own message sent from another device
+        // whose staged plaintext is gone) with an empty/placeholder bubble.
+        if (decrypted.senderId == currentUserId &&
+            (decrypted.content.isEmpty ||
+                decrypted.content.startsWith('🔒'))) {
+          final local = localById[decrypted.id];
+          if (local != null &&
+              local.content.isNotEmpty &&
+              !local.content.startsWith('🔒')) {
+            decrypted = local;
           }
         }
-        decryptedMessages.add(displayable);
+        decryptedMessages.add(decrypted);
       }
 
       await _localStorage.saveMessages(
@@ -251,6 +275,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       createdAt: DateTime.now(),
     );
 
+    final previousLastMessages = Map<String, Message>.from(state.lastMessages);
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[event.receiverId] = tempMessage;
 
@@ -286,12 +311,27 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
 
     try {
+      final encrypted = await E2eeService.instance.prepareOutgoingText(
+        currentUserId: currentUserId,
+        receiverId: event.receiverId,
+        plaintext: event.content,
+      );
+      final usesSignal = encrypted['encryption'] == 'signal';
+
       if (_wsService.isConnected) {
+        // Stage now; the server id arrives via `message_sent` and the ack
+        // handler commits it (socket delivery preserves send order).
+        if (usesSignal) {
+          E2eeService.instance
+              .stageOwnPlaintext(event.receiverId, event.content);
+        }
         _wsService.sendMessage(
           receiverId: event.receiverId,
           messageType: AppConstants.messageTypeText,
-          content: event.content,
-          encryption: 'none',
+          content: usesSignal ? '' : event.content,
+          encryption: encrypted['encryption'] as String? ?? 'none',
+          cipherType: encrypted['cipher_type'] as int?,
+          cipherBody: encrypted['cipher_body'] as String?,
         );
       } else {
         // Try the REST fallback; if the device is fully offline, queue the
@@ -300,24 +340,41 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           final sent = await _apiClient.sendMessage({
             'receiver_id': event.receiverId,
             'message_type': tempMessage.messageType,
-            'content': event.content,
-            'encryption': 'none',
+            'content': usesSignal ? '' : event.content,
+            'encryption': encrypted['encryption'] as String? ?? 'none',
+            'cipher_type': encrypted['cipher_type'],
+            'cipher_body': encrypted['cipher_body'],
           });
-          await _swapTempWithServer(
-            tempId: tempMessage.id,
-            serverJson: sent,
-            currentUserId: currentUserId,
-            emit: emit,
-          );
+          final serverId = sent['id'] as String? ?? sent['_id'] as String?;
+          if (usesSignal && serverId != null && serverId.isNotEmpty) {
+            E2eeService.instance.cacheOwnPlaintext(serverId, event.content);
+            await _swapTempWithServer(
+              tempId: tempMessage.id,
+              serverJson: sent,
+              plaintext: event.content,
+              currentUserId: currentUserId,
+              emit: emit,
+            );
+          }
         } catch (_) {
           if (currentUserId.isNotEmpty) {
             await _localStorage.enqueueOutbox(currentUserId, tempMessage);
           }
         }
       }
+    } on E2eeEncryptionException catch (e) {
+      // Encryption failed: nothing was sent. Roll back the optimistic bubble
+      // so the UI never shows a message that will never arrive, and surface
+      // the reason instead of silently downgrading to plaintext.
+      emit(state.copyWith(
+        status: ChatStatus.loaded,
+        messages: state.messages.where((m) => m.id != tempMessage.id).toList(),
+        lastMessages: previousLastMessages,
+        errorMessage: e.message,
+      ));
     } catch (e) {
-      // Delivery failed (e.g. offline) — the REST fallback above already
-      // queued the message in the outbox.
+      // Delivery failed after successful encryption (e.g. offline) — the REST
+      // fallback above already queued the message in the outbox.
     }
   }
 
@@ -327,10 +384,18 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   ) async {
     emit(state.copyWith(status: ChatStatus.sending));
 
+    final currentUserId = _wsService.currentUserId ?? '';
+
     try {
+      // Encrypt the media bytes end-to-end before they leave the device.
+      final encryptedMedia =
+          await E2eeService.instance.encryptMediaFile(event.filePath);
+
       final uploadResult = await _apiClient.uploadFile(
-        event.filePath,
+        encryptedMedia.cipherPath,
         event.messageType,
+        // Keep the original file's name so the server's extension allow-list
+        // sees e.g. ".jpg" — the ciphertext content itself is opaque.
         filename: event.filePath.split('/').last.split('\\').last,
       );
 
@@ -342,16 +407,28 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         throw Exception('Upload failed');
       }
 
-      // Optimistic bubble so the sender sees the file immediately (the
-      // server echo later swaps this temp message for the real one).
-      final currentUserId = _wsService.currentUserId ?? '';
+      // Deliver the media key inside a Signal-encrypted envelope so the
+      // server only ever sees the ciphertext blob.
+      final envelope = {
+        'k': encryptedMedia.keyB64,
+        'iv': encryptedMedia.nonceB64,
+        'text': '',
+      };
+      final crypto = await E2eeService.instance.encryptEnvelopeForPeer(
+        currentUserId: currentUserId,
+        receiverId: event.receiverId,
+        envelope: envelope,
+      );
+
+      // Optimistic bubble rendering the LOCAL file so the sender sees it
+      // instantly; the server echo later swaps in the hosted version.
       final tempMessage = Message(
         id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
         senderId: currentUserId,
         receiverId: event.receiverId,
         messageType: event.messageType,
         content: '',
-        filePath: fileUrl,
+        filePath: event.filePath,
         fileName: uploadResult['file_name'] as String?,
         fileSize: (uploadResult['file_size'] as num?)?.toInt(),
         mediaType: uploadResult['media_type'] as String?,
@@ -390,8 +467,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
             currentUserId, updatedConversations, newLastMessages);
       }
 
-      try {
-        if (!_wsService.isConnected) throw Exception('not connected');
+      if (_wsService.isConnected) {
+        // Stage the envelope so our own history fetch resolves instead of
+        // showing "Unable to decrypt media" (committed on message_sent).
+        E2eeService.instance.stageOwnPlaintext(
+            event.receiverId, jsonEncode(envelope));
         _wsService.sendMessage(
           receiverId: event.receiverId,
           messageType: event.messageType,
@@ -400,14 +480,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           fileName: tempMessage.fileName,
           fileSize: tempMessage.fileSize,
           mediaType: tempMessage.mediaType,
-          encryption: 'none',
+          encryption: crypto['encryption'] as String? ?? 'none',
+          cipherType: crypto['cipher_type'] as int?,
+          cipherBody: crypto['cipher_body'] as String?,
         );
-      } catch (_) {
-        // Socket dropped after a successful upload: queue the server-hosted
-        // file message for delivery on reconnect.
-        if (currentUserId.isNotEmpty) {
-          await _localStorage.enqueueOutbox(currentUserId, tempMessage);
-        }
       }
 
       emit(state.copyWith(status: ChatStatus.loaded));
@@ -419,8 +495,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
   }
 
-  /// Swaps the optimistic temp bubble for the real server-acknowledged
-  /// message on a `message_sent` ack (plaintext needs no extra resolution).
+  /// Commits the staged outgoing plaintext under the server id from a
+  /// `message_sent` ack and swaps the optimistic temp bubble for the real
+  /// server message (carrying our plaintext, crypto stripped).
   Future<void> _onServerMessageAcked(
     ChatServerMessageAcked event,
     Emitter<ChatState> emit,
@@ -436,20 +513,24 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
     if (server.senderId != currentUserId) return;
 
+    final plaintext = E2eeService.instance
+        .commitOwnPlaintext(server.id, server.receiverId);
     await _swapTempWithServer(
       tempId: null,
       serverJson: event.serverMessage,
+      plaintext: plaintext ?? '',
       currentUserId: currentUserId,
       emit: emit,
     );
   }
 
   /// Replaces the optimistic temp bubble ([tempId], or the oldest temp bubble
-  /// for the receiver when null) with the server-acknowledged message, in
-  /// state and in the local cache.
+  /// for the receiver when null) with the server-acknowledged message showing
+  /// [plaintext], in state and in the local cache.
   Future<void> _swapTempWithServer({
     required String? tempId,
     required Map<String, dynamic> serverJson,
+    required String plaintext,
     required String currentUserId,
     required Emitter<ChatState> emit,
   }) async {
@@ -461,7 +542,12 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     }
     if (server.id.isEmpty) return;
 
-    final resolved = _asDisplayable(server);
+    final resolved = _asDisplayable(server.copyWith(
+      content: plaintext.isNotEmpty ? plaintext : server.content,
+      encryption: 'none',
+      cipherBody: null,
+      cipherType: null,
+    ));
 
     final messages = [...state.messages];
     var swappedId = tempId;
@@ -500,8 +586,13 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatReceiveMessage event,
     Emitter<ChatState> emit,
   ) async {
-    var message = _asDisplayable(event.message);
+    var message = event.message;
     final currentUserId = _wsService.currentUserId ?? '';
+
+    // Decrypt Signal-encrypted messages before display/storage. The legacy
+    // notice mapping runs after, as a safety net for undecryptable history.
+    message = _asDisplayable(await E2eeService.instance
+        .decryptMessage(message, currentUserId: currentUserId));
 
     if (currentUserId.isNotEmpty && message.senderId == currentUserId) {
       return;

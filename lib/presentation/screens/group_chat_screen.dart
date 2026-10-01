@@ -8,6 +8,7 @@ import '../../data/models/group_model.dart';
 import '../../data/models/message_model.dart';
 import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
+import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/websocket_service.dart';
 import '../widgets/message_bubble.dart';
@@ -77,9 +78,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
           .reversed
           .toList();
 
+      final decrypted = <Message>[];
+      for (final m in fetched) {
+        decrypted.add(_asDisplayable(await _decryptGroupMessage(m)));
+      }
+
       if (!mounted) return;
       setState(() {
-        _messages = fetched.map(_asDisplayable).toList();
+        _messages = decrypted;
         _isLoading = false;
       });
       _jumpToLatest();
@@ -126,7 +132,18 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     _scrollToLatest();
   }
 
-  /// Legacy E2EE-era group messages carry ciphertext instead of content.
+  Future<Message> _decryptGroupMessage(Message message) async {
+    // Memoized in E2eeService: live socket delivery and history fetches share
+    // the first successful plaintext instead of consuming the sender-key
+    // chain twice (which throws and renders the placeholder).
+    return E2eeService.instance.decryptGroupMessage(
+      message,
+      currentUserId: _currentUserId ?? '',
+    );
+  }
+
+  /// Plaintext-era group messages carry no ciphertext; anything else that
+  /// still arrives undecryptable gets an honest notice bubble.
   Message _asDisplayable(Message m) {
     if (m.content.isEmpty &&
         (m.encryption == 'signal' || m.encryption == 'sgkey')) {
@@ -180,11 +197,33 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     setState(() => _messages.add(tempMessage));
     _scrollToLatest();
 
+    Map<String, dynamic> crypto;
+    try {
+      crypto = await E2eeService.instance.prepareOutgoingGroupText(
+        currentUserId: _currentUserId!,
+        groupId: widget.group.id,
+        plaintext: content,
+      );
+    } on E2eeEncryptionException catch (e) {
+      // Encryption failed: nothing was sent. Remove the optimistic bubble
+      // and explain why instead of silently sending plaintext.
+      if (!mounted) return;
+      setState(() => _messages.remove(tempMessage));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not secure that message: ${e.message}')),
+      );
+      return;
+    }
+    final usesSignal = crypto['encryption'] == 'sgkey';
+
     _wsService.sendGroupMessage(
       groupId: widget.group.id,
       messageType: 'text',
-      content: content,
-      encryption: 'none',
+      content: usesSignal ? '' : content,
+      encryption: crypto['encryption'] as String? ?? 'none',
+      cipherType: crypto['cipher_type'] as int?,
+      cipherBody: crypto['cipher_body'] as String?,
+      distribution: crypto['distribution'] as String?,
     );
   }
 

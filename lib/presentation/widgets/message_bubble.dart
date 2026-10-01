@@ -5,7 +5,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../core/utils/time_format.dart';
 import '../../data/models/message_model.dart';
-import 'message_image.dart';
+import 'encrypted_image.dart';
 import 'ui/ui.dart';
 
 /// Chat bubble. Sent messages are solid brand blue with white copy;
@@ -173,7 +173,7 @@ class _MessageBubbleState extends State<MessageBubble>
         style: context.text.bodyLarge?.copyWith(color: contentColor),
       );
     } else if (widget.message.isImageMessage) {
-      return MessageImage(message: widget.message);
+      return EncryptedImage(message: widget.message);
     } else if (widget.message.isVideoMessage) {
       return Container(
         height: 150,

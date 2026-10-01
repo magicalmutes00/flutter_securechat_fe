@@ -19,6 +19,7 @@ import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
 import '../widgets/auth_image.dart';
 import '../widgets/message_bubble.dart';
+import '../widgets/security_code_sheet.dart';
 import '../widgets/ui/ui.dart';
 import 'call_screen.dart';
 
@@ -345,6 +346,17 @@ class _ChatScreenState extends State<ChatScreen> {
             icon: const Icon(Icons.search),
             tooltip: 'Search in conversation',
             onPressed: _showSearchDialog,
+          ),
+          IconButton(
+            icon: const Icon(Icons.shield_outlined),
+            tooltip: 'View safety number',
+            onPressed: () {
+              showModalBottomSheet(
+                context: context,
+                builder: (context) =>
+                    SecurityCodeSheet(peerUserId: widget.user.id),
+              );
+            },
           ),
         ],
       ),

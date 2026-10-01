@@ -224,6 +224,7 @@ class _ChatsTabState extends State<ChatsTab> {
           }
 
           return ListView.builder(
+            physics: const AlwaysScrollableScrollPhysics(),
             itemCount: users.length,
             itemBuilder: (context, index) {
               final user = users[index];

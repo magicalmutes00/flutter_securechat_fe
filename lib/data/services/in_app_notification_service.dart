@@ -11,6 +11,7 @@ import '../models/group_model.dart';
 import '../models/message_model.dart';
 import '../models/user_model.dart';
 import 'api_client.dart';
+import 'e2ee/e2ee_service.dart';
 import 'local_storage_service.dart';
 import 'notification_service.dart';
 import 'rtc/incoming_call_router.dart';
@@ -96,12 +97,40 @@ class InAppNotificationService with WidgetsBindingObserver {
   }
 
   Future<void> _handleIncoming(Message raw, {required bool isGroup}) async {
-    final message = raw;
+    var message = raw;
     final me = _ws.currentUserId;
 
-    // No encryption: messages arrive as plaintext and are forwarded as-is.
-    (isGroup ? _decryptedGroupMessageController : _decryptedMessageController)
-        .add(message);
+    // Decrypt here so downstream consumers (ChatBloc, GroupChatScreen)
+    // never touch ciphertext twice.
+    try {
+      if (isGroup) {
+        if (message.encryption == 'sgkey' &&
+            message.cipherBody != null &&
+            message.groupId != null &&
+            me != null) {
+          // Memoized: the same sender-key ciphertext must never be decrypted
+          // twice (live socket + history fetch), so go through the shared
+          // cache instead of decrypting raw here.
+          message = await E2eeService.instance.decryptGroupMessage(
+            message,
+            currentUserId: me,
+          );
+        }
+        _decryptedGroupMessageController.add(message);
+      } else {
+        if (me != null) {
+          message = await E2eeService.instance
+              .decryptMessage(message, currentUserId: me);
+        }
+        _decryptedMessageController.add(message);
+      }
+    } catch (_) {
+      // Decryption failed: hand the ciphertext on so the chat UI can render
+      // its "unable to decrypt" placeholder.
+      (isGroup ? _decryptedGroupMessageController : _decryptedMessageController)
+          .add(message);
+      return;
+    }
 
     if (me == null || message.senderId == me) return;
 

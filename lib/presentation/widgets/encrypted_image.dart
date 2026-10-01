@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -6,20 +7,27 @@ import '../../core/constants/app_constants.dart';
 import '../../core/theme/app_tokens.dart';
 import '../../data/models/message_model.dart';
 import '../../data/services/api_client.dart';
+import '../../data/services/e2ee/e2ee_service.dart';
 import '../../data/services/media_cache_service.dart';
 
-/// Displays an image attachment, downloading the blob with the authenticated
-/// API client and caching the bytes for instant re-viewing and offline use.
-class MessageImage extends StatefulWidget {
-  const MessageImage({super.key, required this.message});
+/// Displays an image attachment, downloading the (possibly encrypted) blob with
+/// the authenticated API client and decrypting it in memory before rendering.
+///
+/// The AES key/nonce come from the decrypted Signal envelope held in
+/// [Message.mediaKey]/[Message.mediaNonce]; they never touch disk. The
+/// *decrypted* image is cached via [MediaCacheService] (encrypted at rest)
+/// keyed by the attachment path, so re-opening a conversation — or viewing
+/// media offline — does not re-download it.
+class EncryptedImage extends StatefulWidget {
+  const EncryptedImage({super.key, required this.message});
 
   final Message message;
 
   @override
-  State<MessageImage> createState() => _MessageImageState();
+  State<EncryptedImage> createState() => _EncryptedImageState();
 }
 
-class _MessageImageState extends State<MessageImage> {
+class _EncryptedImageState extends State<EncryptedImage> {
   final ApiClient _api = ApiClient();
   final MediaCacheService _cache = MediaCacheService();
   Uint8List? _bytes;
@@ -32,7 +40,7 @@ class _MessageImageState extends State<MessageImage> {
   }
 
   @override
-  void didUpdateWidget(MessageImage oldWidget) {
+  void didUpdateWidget(EncryptedImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.message.id != widget.message.id) {
       _bytes = null;
@@ -41,10 +49,27 @@ class _MessageImageState extends State<MessageImage> {
     }
   }
 
+  /// Optimistic temp bubbles reference the sender's on-device file rather
+  /// than a hosted path — render those bytes directly instead of downloading.
+  bool _isLocalPath(String path) =>
+      !(path.startsWith('/api/') || path.startsWith('http'));
+
   Future<void> _load() async {
     final path = widget.message.filePath;
     if (path == null || path.isEmpty) {
       setState(() => _failed = true);
+      return;
+    }
+
+    if (_isLocalPath(path)) {
+      try {
+        final bytes = await File(path).readAsBytes();
+        if (!mounted) return;
+        setState(() => _bytes = bytes);
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _failed = true);
+      }
       return;
     }
 
@@ -57,7 +82,12 @@ class _MessageImageState extends State<MessageImage> {
 
     try {
       final raw = await _api.downloadFileBytes('${AppConstants.baseUrl}$path');
-      final decoded = Uint8List.fromList(raw);
+      Uint8List decoded = Uint8List.fromList(raw);
+      if (widget.message.mediaKey != null &&
+          widget.message.mediaNonce != null) {
+        decoded =
+            await E2eeService.instance.decryptMediaBytes(widget.message, raw);
+      }
       await _cache.write(path, decoded);
       if (!mounted) return;
       setState(() => _bytes = decoded);
@@ -75,8 +105,8 @@ class _MessageImageState extends State<MessageImage> {
         width: 200,
         color: context.colors.surfaceContainerHighest,
         child: Center(
-          child: Icon(Icons.broken_image,
-              size: 40, color: context.colors.onSurfaceVariant),
+          child: Icon(Icons.lock_outline,
+              size: 40, color: context.appColors.primaryEmphasis),
         ),
       );
     }

@@ -132,6 +132,7 @@ class _StatusTabState extends State<StatusTab> {
                     onAction: _openCreateStatus,
                   )
                 : ListView(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     children: [
                       _MyStatusCard(
                         hasStatus: _myStatuses.isNotEmpty,
