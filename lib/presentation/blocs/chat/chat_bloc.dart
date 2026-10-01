@@ -12,6 +12,81 @@ import '../../../data/services/e2ee/e2ee_service.dart';
 import 'chat_event.dart';
 import 'chat_state.dart';
 
+/// Internal: performs the network dispatch for a text message whose
+/// optimistic bubble was already rendered. Never dispatched by UI directly —
+/// [_onSendTextMessage] renders first, then either adds this immediately or
+/// holds it until a quoted `temp_…` bubble resolves to a server id.
+class _DispatchHeldText extends ChatEvent {
+  final String receiverId;
+  final String content;
+
+  /// Resolved server id of the quoted message, or null (plain send, or the
+  /// quoted bubble never acked and the hold expired).
+  final String? replyToId;
+  final String tempId;
+
+  const _DispatchHeldText({
+    required this.receiverId,
+    required this.content,
+    this.replyToId,
+    required this.tempId,
+  });
+
+  @override
+  List<Object?> get props => [receiverId, content, replyToId, tempId];
+}
+
+/// Internal: WS dispatch for a file message whose media is already encrypted,
+/// uploaded, and rendered optimistically (same hold semantics as text).
+class _DispatchHeldFile extends ChatEvent {
+  final String receiverId;
+  final String messageType;
+  final String fileUrl;
+  final String? fileName;
+  final int? fileSize;
+  final String? mediaType;
+
+  /// JSON-encoded Signal envelope, staged so our own history resolves.
+  final String envelopeJson;
+  final String encryption;
+  final int? cipherType;
+  final String? cipherBody;
+
+  final String? replyToId;
+  final String tempId;
+
+  const _DispatchHeldFile({
+    required this.receiverId,
+    required this.messageType,
+    required this.fileUrl,
+    this.fileName,
+    this.fileSize,
+    this.mediaType,
+    required this.envelopeJson,
+    required this.encryption,
+    this.cipherType,
+    this.cipherBody,
+    this.replyToId,
+    required this.tempId,
+  });
+
+  @override
+  List<Object?> get props => [
+        receiverId,
+        messageType,
+        fileUrl,
+        fileName,
+        fileSize,
+        mediaType,
+        envelopeJson,
+        encryption,
+        cipherType,
+        cipherBody,
+        replyToId,
+        tempId,
+      ];
+}
+
 class ChatBloc extends Bloc<ChatEvent, ChatState> {
   final ApiClient _apiClient = ApiClient();
   final WebSocketService _wsService = WebSocketService();
@@ -22,10 +97,39 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
   StreamSubscription? _statusSubscription;
   Timer? _typingClearTimer;
 
+  /// Sends held until a quoted optimistic bubble is acked: the server can
+  /// only link real message ids. Keyed by the quoted `temp_…` id; flushed
+  /// with the real server id by [_swapTempWithServer], or without the link
+  /// when the hold expires (quoted bubble never acked — e.g. its own send
+  /// failed and was rolled back).
+  final Map<String, List<ChatEvent Function(String?)>> _heldSends = {};
+
+  static bool _isTempId(String? id) => id != null && id.startsWith('temp_');
+
+  /// Temp ids have no server meaning (the server rejects them via UUID
+  /// validation), so never put them on the wire.
+  static String? _serverReplyId(String? replyToId) =>
+      _isTempId(replyToId) ? null : replyToId;
+
+  void _holdUntilQuotedAcked(
+      String tempQuoteId, ChatEvent Function(String?) build) {
+    _heldSends.putIfAbsent(tempQuoteId, () => []).add(build);
+    Timer(const Duration(seconds: 30), () {
+      if (isClosed) return;
+      final waiting = _heldSends.remove(tempQuoteId);
+      if (waiting == null) return;
+      for (final buildEvent in waiting) {
+        add(buildEvent(null));
+      }
+    });
+  }
+
   ChatBloc() : super(const ChatState()) {
     on<ChatLoadMessages>(_onLoadMessages);
     on<ChatSendTextMessage>(_onSendTextMessage);
     on<ChatSendFileMessage>(_onSendFileMessage);
+    on<_DispatchHeldText>(_onDispatchHeldText);
+    on<_DispatchHeldFile>(_onDispatchHeldFile);
     on<ChatReceiveMessage>(_onReceiveMessage);
     on<ChatServerMessageAcked>(_onServerMessageAcked);
     on<ChatUpdateMessageStatus>(_onUpdateMessageStatus);
@@ -116,6 +220,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           'receiver_id': message.receiverId,
           'message_type': message.messageType,
           'content': usesSignal ? '' : message.content,
+          'reply_to_id': _serverReplyId(message.replyToId),
           'encryption': encrypted['encryption'] as String? ?? 'none',
           'cipher_type': encrypted['cipher_type'],
           'cipher_body': encrypted['cipher_body'],
@@ -271,11 +376,11 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       receiverId: event.receiverId,
       messageType: AppConstants.messageTypeText,
       content: event.content,
+      replyToId: event.replyToId,
       status: 'sent',
       createdAt: DateTime.now(),
     );
 
-    final previousLastMessages = Map<String, Message>.from(state.lastMessages);
     final newLastMessages = Map<String, Message>.from(state.lastMessages);
     newLastMessages[event.receiverId] = tempMessage;
 
@@ -310,6 +415,36 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           currentUserId, updatedConversations, newLastMessages);
     }
 
+    if (_isTempId(event.replyToId)) {
+      // The quoted bubble hasn't been acked yet and temp ids are meaningless
+      // to the server: hold the network dispatch until `_swapTempWithServer`
+      // resolves it (or the 30s hold expires). The optimistic bubble above
+      // already renders the quote, so this is invisible in the UI.
+      _holdUntilQuotedAcked(
+        event.replyToId!,
+        (resolved) => _DispatchHeldText(
+          receiverId: event.receiverId,
+          content: event.content,
+          replyToId: resolved,
+          tempId: tempMessage.id,
+        ),
+      );
+      return;
+    }
+    add(_DispatchHeldText(
+      receiverId: event.receiverId,
+      content: event.content,
+      replyToId: _serverReplyId(event.replyToId),
+      tempId: tempMessage.id,
+    ));
+  }
+
+  Future<void> _onDispatchHeldText(
+    _DispatchHeldText event,
+    Emitter<ChatState> emit,
+  ) async {
+    final currentUserId = _wsService.currentUserId ?? '';
+
     try {
       final encrypted = await E2eeService.instance.prepareOutgoingText(
         currentUserId: currentUserId,
@@ -329,6 +464,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           receiverId: event.receiverId,
           messageType: AppConstants.messageTypeText,
           content: usesSignal ? '' : event.content,
+          replyToId: event.replyToId,
           encryption: encrypted['encryption'] as String? ?? 'none',
           cipherType: encrypted['cipher_type'] as int?,
           cipherBody: encrypted['cipher_body'] as String?,
@@ -339,8 +475,9 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         try {
           final sent = await _apiClient.sendMessage({
             'receiver_id': event.receiverId,
-            'message_type': tempMessage.messageType,
+            'message_type': AppConstants.messageTypeText,
             'content': usesSignal ? '' : event.content,
+            'reply_to_id': event.replyToId,
             'encryption': encrypted['encryption'] as String? ?? 'none',
             'cipher_type': encrypted['cipher_type'],
             'cipher_body': encrypted['cipher_body'],
@@ -349,7 +486,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           if (usesSignal && serverId != null && serverId.isNotEmpty) {
             E2eeService.instance.cacheOwnPlaintext(serverId, event.content);
             await _swapTempWithServer(
-              tempId: tempMessage.id,
+              tempId: event.tempId,
               serverJson: sent,
               plaintext: event.content,
               currentUserId: currentUserId,
@@ -358,7 +495,10 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
           }
         } catch (_) {
           if (currentUserId.isNotEmpty) {
-            await _localStorage.enqueueOutbox(currentUserId, tempMessage);
+            final temp = state.messages.where((m) => m.id == event.tempId);
+            if (temp.isNotEmpty) {
+              await _localStorage.enqueueOutbox(currentUserId, temp.first);
+            }
           }
         }
       }
@@ -366,10 +506,14 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
       // Encryption failed: nothing was sent. Roll back the optimistic bubble
       // so the UI never shows a message that will never arrive, and surface
       // the reason instead of silently downgrading to plaintext.
+      final lastMessages = Map<String, Message>.from(state.lastMessages);
+      if (lastMessages[event.receiverId]?.id == event.tempId) {
+        lastMessages.remove(event.receiverId);
+      }
       emit(state.copyWith(
         status: ChatStatus.loaded,
-        messages: state.messages.where((m) => m.id != tempMessage.id).toList(),
-        lastMessages: previousLastMessages,
+        messages: state.messages.where((m) => m.id != event.tempId).toList(),
+        lastMessages: lastMessages,
         errorMessage: e.message,
       ));
     } catch (e) {
@@ -428,6 +572,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         receiverId: event.receiverId,
         messageType: event.messageType,
         content: '',
+        replyToId: event.replyToId,
         filePath: event.filePath,
         fileName: uploadResult['file_name'] as String?,
         fileSize: (uploadResult['file_size'] as num?)?.toInt(),
@@ -467,23 +612,28 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
             currentUserId, updatedConversations, newLastMessages);
       }
 
-      if (_wsService.isConnected) {
-        // Stage the envelope so our own history fetch resolves instead of
-        // showing "Unable to decrypt media" (committed on message_sent).
-        E2eeService.instance.stageOwnPlaintext(
-            event.receiverId, jsonEncode(envelope));
-        _wsService.sendMessage(
+      _DispatchHeldFile buildDispatch(String? resolvedReplyId) {
+        return _DispatchHeldFile(
           receiverId: event.receiverId,
           messageType: event.messageType,
-          content: '',
           fileUrl: fileUrl,
           fileName: tempMessage.fileName,
           fileSize: tempMessage.fileSize,
           mediaType: tempMessage.mediaType,
+          envelopeJson: jsonEncode(envelope),
           encryption: crypto['encryption'] as String? ?? 'none',
           cipherType: crypto['cipher_type'] as int?,
           cipherBody: crypto['cipher_body'] as String?,
+          replyToId: resolvedReplyId,
+          tempId: tempMessage.id,
         );
+      }
+
+      if (_isTempId(event.replyToId)) {
+        // Same hold semantics as text: the quoted bubble has no server id yet.
+        _holdUntilQuotedAcked(event.replyToId!, buildDispatch);
+      } else {
+        add(buildDispatch(_serverReplyId(event.replyToId)));
       }
 
       emit(state.copyWith(status: ChatStatus.loaded));
@@ -493,6 +643,31 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         errorMessage: e.toString(),
       ));
     }
+  }
+
+  Future<void> _onDispatchHeldFile(
+    _DispatchHeldFile event,
+    Emitter<ChatState> emit,
+  ) async {
+    final currentUserId = _wsService.currentUserId ?? '';
+    if (currentUserId.isEmpty || !_wsService.isConnected) return;
+
+    // Stage the envelope so our own history fetch resolves instead of
+    // showing "Unable to decrypt media" (committed on message_sent).
+    E2eeService.instance.stageOwnPlaintext(event.receiverId, event.envelopeJson);
+    _wsService.sendMessage(
+      receiverId: event.receiverId,
+      messageType: event.messageType,
+      content: '',
+      fileUrl: event.fileUrl,
+      fileName: event.fileName,
+      fileSize: event.fileSize,
+      mediaType: event.mediaType,
+      replyToId: event.replyToId,
+      encryption: event.encryption,
+      cipherType: event.cipherType,
+      cipherBody: event.cipherBody,
+    );
   }
 
   /// Commits the staged outgoing plaintext under the server id from a
@@ -580,6 +755,30 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     );
     await _localStorage.saveConversations(
         currentUserId, state.conversations, newLastMessages);
+
+    // Replies composed against this still-sending bubble were held back; the
+    // quoted message finally has a real id, so release the held dispatches.
+    // Any other message still pointing at the temp id gets remapped too, so
+    // the quote never dangles.
+    final held = _heldSends.remove(swappedId);
+    if (held != null) {
+      for (final build in held) {
+        add(build(server.id));
+      }
+    }
+    var remapped = false;
+    final remappedMessages = messages.map((m) {
+      if (m.replyToId == swappedId) {
+        remapped = true;
+        return m.copyWith(replyToId: server.id);
+      }
+      return m;
+    }).toList();
+    if (remapped) {
+      emit(state.copyWith(messages: remappedMessages));
+      await _localStorage.saveMessages(
+          currentUserId, server.receiverId, remappedMessages);
+    }
   }
 
   Future<void> _onReceiveMessage(
@@ -862,6 +1061,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatReset event,
     Emitter<ChatState> emit,
   ) {
+    _heldSends.clear();
     emit(const ChatState());
   }
 

@@ -17,6 +17,25 @@ class MessageBubble extends StatefulWidget {
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
+  /// Already-decrypted quoted message, or null when the target isn't loaded
+  /// (older than the fetched page, or deleted since). The bubble renders a
+  /// strip whenever [Message.replyToId] is set, falling back to an
+  /// "unavailable" strip when this is null.
+  final Message? quotedMessage;
+
+  /// Display name of the quoted message's sender.
+  final String? quotedSenderName;
+
+  /// Called on swipe-to-reply and from the "Reply" sheet row. Null disables
+  /// both affordances.
+  final VoidCallback? onReply;
+
+  /// Called when the quote strip is tapped (scroll to the original).
+  final VoidCallback? onTapQuote;
+
+  /// Briefly true after a quote-strip jump lands here: renders a glow ring.
+  final bool isHighlighted;
+
   const MessageBubble({
     super.key,
     required this.message,
@@ -24,6 +43,11 @@ class MessageBubble extends StatefulWidget {
     this.onDelete,
     this.onTap,
     this.onLongPress,
+    this.quotedMessage,
+    this.quotedSenderName,
+    this.onReply,
+    this.onTapQuote,
+    this.isHighlighted = false,
   });
 
   @override
@@ -66,6 +90,15 @@ class _MessageBubbleState extends State<MessageBubble>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (widget.onReply != null)
+              ListTile(
+                leading: const Icon(Icons.reply_outlined),
+                title: const Text('Reply'),
+                onTap: () {
+                  Navigator.pop(context);
+                  widget.onReply?.call();
+                },
+              ),
             if (widget.isMe && widget.onDelete != null)
               ListTile(
                 leading:
@@ -109,42 +142,58 @@ class _MessageBubbleState extends State<MessageBubble>
           ),
         );
       },
-      child: GestureDetector(
-        onTap: widget.onTap,
-        onLongPress: _showActionsSheet,
-        child: Align(
-          alignment:
-              widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
-          child: LayoutBuilder(
-            builder: (context, constraints) => Container(
-              margin: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
-              padding: const EdgeInsets.symmetric(
-                  horizontal: AppSpacing.md, vertical: AppSpacing.sm),
-              constraints: BoxConstraints(
-                maxWidth: constraints.maxWidth * 0.78,
-              ),
-              decoration: BoxDecoration(
-                color: bubbleColor,
-                borderRadius: BorderRadius.only(
-                  topLeft: const Radius.circular(AppRadius.lg),
-                  topRight: const Radius.circular(AppRadius.lg),
-                  bottomLeft: widget.isMe
-                      ? const Radius.circular(AppRadius.lg)
-                      : Radius.zero,
-                  bottomRight: widget.isMe
-                      ? Radius.zero
-                      : const Radius.circular(AppRadius.lg),
+      child: SwipeToReply(
+        enabled: widget.onReply != null,
+        onReply: () => widget.onReply?.call(),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          onLongPress: _showActionsSheet,
+          child: Align(
+            alignment:
+                widget.isMe ? Alignment.centerRight : Alignment.centerLeft,
+            child: LayoutBuilder(
+              builder: (context, constraints) => Container(
+                margin: const EdgeInsets.symmetric(vertical: AppSpacing.xs),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.md, vertical: AppSpacing.sm),
+                constraints: BoxConstraints(
+                  maxWidth: constraints.maxWidth * 0.78,
                 ),
-                boxShadow: AppShadows.card(Theme.of(context).brightness),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildMessageContent(),
-                  const SizedBox(height: AppSpacing.xs),
-                  _buildMessageInfo(),
-                ],
+                decoration: BoxDecoration(
+                  color: bubbleColor,
+                  borderRadius: BorderRadius.only(
+                    topLeft: const Radius.circular(AppRadius.lg),
+                    topRight: const Radius.circular(AppRadius.lg),
+                    bottomLeft: widget.isMe
+                        ? const Radius.circular(AppRadius.lg)
+                        : Radius.zero,
+                    bottomRight: widget.isMe
+                        ? Radius.zero
+                        : const Radius.circular(AppRadius.lg),
+                  ),
+                  border: widget.isHighlighted
+                      ? Border.all(color: AppPalette.lime400, width: 2)
+                      : null,
+                  boxShadow: widget.isHighlighted
+                      ? [
+                          BoxShadow(
+                            color: AppPalette.lime400.withValues(alpha: 0.45),
+                            blurRadius: 12,
+                            spreadRadius: 1,
+                          ),
+                        ]
+                      : AppShadows.card(Theme.of(context).brightness),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (widget.message.replyToId != null) _buildQuoteStrip(),
+                    _buildMessageContent(),
+                    const SizedBox(height: AppSpacing.xs),
+                    _buildMessageInfo(),
+                  ],
+                ),
               ),
             ),
           ),
@@ -163,6 +212,43 @@ class _MessageBubbleState extends State<MessageBubble>
     // foreground; inside a received bubble they use the theme emphasis.
     if (widget.isMe) return context.appColors.onSentBubble;
     return context.appColors.primaryEmphasis;
+  }
+
+  Widget _buildQuoteStrip() {
+    final appColors = context.appColors;
+    final style = widget.isMe
+        ? QuoteStripStyle(
+            barColor: appColors.onSentBubble,
+            nameColor: appColors.onSentBubble,
+            snippetColor: appColors.onSentBubble.withValues(alpha: 0.85),
+            backgroundColor: appColors.onSentBubble.withValues(alpha: 0.14),
+          )
+        : QuoteStripStyle(
+            barColor: appColors.primaryEmphasis,
+            nameColor: appColors.primaryEmphasis,
+            snippetColor: context.colors.onSurfaceVariant,
+            backgroundColor:
+                context.colors.surfaceContainerHighest.withValues(alpha: 0.5),
+          );
+    final quoted = widget.quotedMessage;
+    final Widget strip = quoted == null
+        ? QuoteStrip.unavailable(style: style)
+        : () {
+            final snippet = ReplySnippet.forMessage(quoted);
+            return QuoteStrip(
+              senderName: widget.quotedSenderName ?? 'Unknown',
+              snippet: snippet.text,
+              leadingIcon: snippet.icon,
+              style: style,
+              onTap: widget.onTapQuote,
+            );
+          }();
+    // Quotes span the bubble width like WhatsApp; the message body below
+    // keeps its natural width.
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+      child: SizedBox(width: double.infinity, child: strip),
+    );
   }
 
   Widget _buildMessageContent() {

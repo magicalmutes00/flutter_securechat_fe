@@ -44,6 +44,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
   StreamSubscription? _messageSub;
   StreamSubscription? _typingSub;
 
+  /// Message the composer is currently replying to (screen-local UI state;
+  /// only its id travels on the wire).
+  Message? _replyingTo;
+
+  /// Message id briefly ringed after a quote-strip jump lands on it.
+  String? _highlightedId;
+  final Map<String, GlobalKey> _messageKeys = {};
+
   String? get _currentUserId => _wsService.currentUserId;
 
   @override
@@ -183,11 +191,14 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     final content = _messageController.text.trim();
     if (content.isEmpty || _currentUserId == null) return;
     _messageController.clear();
+    final replyTarget = _replyingTo;
+    if (replyTarget != null) setState(() => _replyingTo = null);
 
     final tempMessage = Message(
       id: 'temp_${DateTime.now().millisecondsSinceEpoch}',
       senderId: _currentUserId!,
       receiverId: widget.group.id,
+      replyToId: replyTarget?.id,
       groupId: widget.group.id,
       messageType: 'text',
       content: content,
@@ -216,10 +227,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
     }
     final usesSignal = crypto['encryption'] == 'sgkey';
 
+    // Temp ids are meaningless to the server (and this screen has no ack/swap
+    // path to resolve them later), so a reply to a still-sending bubble keeps
+    // its link locally only; the server row carries no link in that race.
+    final wireReplyId = replyTarget?.id;
     _wsService.sendGroupMessage(
       groupId: widget.group.id,
       messageType: 'text',
       content: usesSignal ? '' : content,
+      replyToId: wireReplyId != null && wireReplyId.startsWith('temp_')
+          ? null
+          : wireReplyId,
       encryption: crypto['encryption'] as String? ?? 'none',
       cipherType: crypto['cipher_type'] as int?,
       cipherBody: crypto['cipher_body'] as String?,
@@ -329,15 +347,61 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
             controller: _messageController,
             onSend: _sendMessage,
             onChanged: _onTypingChanged,
+            header: _replyingTo == null ? null : _buildReplyPreview(),
           ),
         ],
       ),
     );
   }
 
+  /// Quote preview above the composer for the message being replied to.
+  Widget _buildReplyPreview() {
+    final target = _replyingTo!;
+    final snippet = ReplySnippet.forMessage(target);
+    return QuoteStrip(
+      senderName: _senderLabel(target.senderId),
+      snippet: snippet.text,
+      leadingIcon: snippet.icon,
+      style: QuoteStripStyle(
+        barColor: context.appColors.primaryEmphasis,
+        nameColor: context.appColors.primaryEmphasis,
+        snippetColor: context.colors.onSurfaceVariant,
+      ),
+      onClose: () => setState(() => _replyingTo = null),
+    );
+  }
+
+  /// Scrolls the list to the quoted original and rings it briefly.
+  void _jumpToQuoted(String messageId) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _messageKeys[messageId]?.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: AppDurations.medium,
+        curve: Curves.easeOut,
+        alignment: 0.5,
+      );
+      setState(() => _highlightedId = messageId);
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (mounted && _highlightedId == messageId) {
+          setState(() => _highlightedId = null);
+        }
+      });
+    });
+  }
+
   /// Oldest→newest with day dividers and tight same-sender grouping.
   /// (This list is *not* reversed, unlike the 1:1 chat.)
   List<Widget> _buildMessageWidgets() {
+    // Drop lookup keys for messages that are gone (deleted / refreshed).
+    final ids = _messages.map((m) => m.id).toSet();
+    _messageKeys.removeWhere((id, _) => !ids.contains(id));
+
+    // Resolve reply targets from the already-decrypted messages in state —
+    // never re-fetch (a sender-key ciphertext can only be decrypted once).
+    final byId = {for (final m in _messages) m.id: m};
+
     final widgets = <Widget>[];
     DateTime? lastDay;
     String? lastSender;
@@ -352,8 +416,11 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
       final isMe = message.senderId == _currentUserId;
       final tight = lastSender == message.senderId;
       lastSender = message.senderId;
+      final quoted =
+          message.replyToId == null ? null : byId[message.replyToId];
       widgets.add(
         Padding(
+          key: _messageKeys.putIfAbsent(message.id, () => GlobalKey()),
           padding: EdgeInsets.symmetric(vertical: tight ? 0 : 3),
           child: Column(
             crossAxisAlignment:
@@ -371,7 +438,17 @@ class _GroupChatScreenState extends State<GroupChatScreen> {
                     ),
                   ),
                 ),
-              MessageBubble(message: message, isMe: isMe),
+              MessageBubble(
+                message: message,
+                isMe: isMe,
+                onReply: () => setState(() => _replyingTo = message),
+                quotedMessage: quoted,
+                quotedSenderName:
+                    quoted == null ? null : _senderLabel(quoted.senderId),
+                onTapQuote:
+                    quoted == null ? null : () => _jumpToQuoted(quoted.id),
+                isHighlighted: _highlightedId == message.id,
+              ),
             ],
           ),
         ),

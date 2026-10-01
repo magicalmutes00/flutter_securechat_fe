@@ -5,6 +5,12 @@ class Message extends Equatable {
   final String senderId;
   final String receiverId;
   final String? groupId;
+
+  // Reply target: id of the quoted message in the same conversation.
+  // Resolved client-side from already-decrypted messages; the server stores
+  // only this id (never a quoted-text snapshot) so it learns nothing about
+  // encrypted content.
+  final String? replyToId;
   final String messageType;
   final String content;
   final String? filePath;
@@ -34,6 +40,7 @@ class Message extends Equatable {
     required this.senderId,
     required this.receiverId,
     this.groupId,
+    this.replyToId,
     required this.messageType,
     required this.content,
     this.filePath,
@@ -57,6 +64,7 @@ class Message extends Equatable {
       senderId: json['sender_id'] as String? ?? '',
       receiverId: json['receiver_id'] as String? ?? '',
       groupId: json['group_id'] as String?,
+      replyToId: json['reply_to_id'] as String?,
       messageType: json['message_type'] as String? ?? 'text',
       content: json['content'] as String? ?? '',
       filePath: json['file_path'] as String?,
@@ -85,6 +93,7 @@ class Message extends Equatable {
       'sender_id': senderId,
       'receiver_id': receiverId,
       'group_id': groupId,
+      'reply_to_id': replyToId,
       'message_type': messageType,
       'content': content,
       'file_path': filePath,
@@ -106,6 +115,7 @@ class Message extends Equatable {
     String? senderId,
     String? receiverId,
     String? groupId,
+    String? replyToId,
     String? messageType,
     String? content,
     String? filePath,
@@ -127,6 +137,7 @@ class Message extends Equatable {
       senderId: senderId ?? this.senderId,
       receiverId: receiverId ?? this.receiverId,
       groupId: groupId ?? this.groupId,
+      replyToId: replyToId ?? this.replyToId,
       messageType: messageType ?? this.messageType,
       content: content ?? this.content,
       filePath: filePath ?? this.filePath,
@@ -161,6 +172,7 @@ class Message extends Equatable {
         senderId,
         receiverId,
         groupId,
+        replyToId,
         messageType,
         content,
         filePath,

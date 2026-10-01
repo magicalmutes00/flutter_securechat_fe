@@ -22,10 +22,19 @@ class ChatSendTextMessage extends ChatEvent {
   final String receiverId;
   final String content;
 
-  const ChatSendTextMessage({required this.receiverId, required this.content});
+  /// Id of the quoted message. Null for a plain send. May point at a still-
+  /// sending optimistic bubble (`temp_…`); the bloc holds the network dispatch
+  /// until the quoted message resolves to a server id.
+  final String? replyToId;
+
+  const ChatSendTextMessage({
+    required this.receiverId,
+    required this.content,
+    this.replyToId,
+  });
 
   @override
-  List<Object?> get props => [receiverId, content];
+  List<Object?> get props => [receiverId, content, replyToId];
 }
 
 class ChatSendFileMessage extends ChatEvent {
@@ -33,14 +42,18 @@ class ChatSendFileMessage extends ChatEvent {
   final String filePath;
   final String messageType;
 
+  /// Id of the quoted message (see [ChatSendTextMessage.replyToId]).
+  final String? replyToId;
+
   const ChatSendFileMessage({
     required this.receiverId,
     required this.filePath,
     required this.messageType,
+    this.replyToId,
   });
 
   @override
-  List<Object?> get props => [receiverId, filePath, messageType];
+  List<Object?> get props => [receiverId, filePath, messageType, replyToId];
 }
 
 class ChatReceiveMessage extends ChatEvent {

@@ -14,6 +14,7 @@ import '../../data/models/user_model.dart';
 import '../../data/services/api_client.dart';
 import '../../data/services/in_app_notification_service.dart';
 import '../../data/services/rtc/call_manager.dart';
+import '../../data/services/websocket_service.dart';
 import '../blocs/chat/chat_bloc.dart';
 import '../blocs/chat/chat_event.dart';
 import '../blocs/chat/chat_state.dart';
@@ -41,6 +42,13 @@ class _ChatScreenState extends State<ChatScreen> {
   bool _nearBottom = true;
   int _lastMessageCount = 0;
   StreamSubscription? _blocSubscription;
+
+  /// Message the composer is currently replying to (screen-local UI state;
+  /// only its id travels on the wire).
+  Message? _replyingTo;
+
+  /// Message id briefly ringed after a quote-strip jump lands on it.
+  String? _highlightedId;
 
   String get _chatTitle =>
       widget.user.displayName ??
@@ -133,12 +141,20 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  /// Captures the composer's reply target for a send and clears the preview.
+  String? _takeReplyTarget() {
+    final id = _replyingTo?.id;
+    if (_replyingTo != null) setState(() => _replyingTo = null);
+    return id;
+  }
+
   void _sendMessage() {
     if (_messageController.text.trim().isEmpty) return;
 
     context.read<ChatBloc>().add(ChatSendTextMessage(
           receiverId: widget.user.id,
           content: _messageController.text.trim(),
+          replyToId: _takeReplyTarget(),
         ));
 
     _messageController.clear();
@@ -168,6 +184,7 @@ class _ChatScreenState extends State<ChatScreen> {
               receiverId: widget.user.id,
               filePath: image.path,
               messageType: AppConstants.messageTypeImage,
+              replyToId: _takeReplyTarget(),
             ));
       }
     } catch (e) {
@@ -188,6 +205,7 @@ class _ChatScreenState extends State<ChatScreen> {
               receiverId: widget.user.id,
               filePath: video.path,
               messageType: AppConstants.messageTypeVideo,
+              replyToId: _takeReplyTarget(),
             ));
       }
     } catch (e) {
@@ -209,6 +227,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 receiverId: widget.user.id,
                 filePath: file.path!,
                 messageType: AppConstants.messageTypeDocument,
+                replyToId: _takeReplyTarget(),
               ));
         }
       }
@@ -412,6 +431,7 @@ class _ChatScreenState extends State<ChatScreen> {
               onSend: _sendMessage,
               onAttach: _showAttachmentOptions,
               onChanged: _onComposerChanged,
+              header: _replyingTo == null ? null : _buildReplyPreview(),
             ),
           ],
         ),
@@ -434,12 +454,55 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Quote preview above the composer for the message being replied to.
+  Widget _buildReplyPreview() {
+    final target = _replyingTo!;
+    final me = WebSocketService().currentUserId;
+    final snippet = ReplySnippet.forMessage(target);
+    return QuoteStrip(
+      senderName: target.senderId == me ? 'You' : _chatTitle,
+      snippet: snippet.text,
+      leadingIcon: snippet.icon,
+      style: QuoteStripStyle(
+        barColor: context.appColors.primaryEmphasis,
+        nameColor: context.appColors.primaryEmphasis,
+        snippetColor: context.colors.onSurfaceVariant,
+      ),
+      onClose: () => setState(() => _replyingTo = null),
+    );
+  }
+
+  /// Scrolls the list to the quoted original and rings it briefly.
+  void _jumpToQuoted(String messageId) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _messageKeys[messageId]?.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: AppDurations.medium,
+        curve: Curves.easeOut,
+        alignment: 0.5,
+      );
+      setState(() => _highlightedId = messageId);
+      Future.delayed(const Duration(milliseconds: 1200), () {
+        if (mounted && _highlightedId == messageId) {
+          setState(() => _highlightedId = null);
+        }
+      });
+    });
+  }
+
   /// Builds oldest→newest widgets with day dividers and tight grouping for
   /// consecutive same-sender messages, then reverses for the `reverse` list.
   List<Widget> _buildMessageWidgets(List<Message> messages) {
     // Drop lookup keys for messages that are gone (deleted / refreshed).
     final ids = messages.map((m) => m.id).toSet();
     _messageKeys.removeWhere((id, _) => !ids.contains(id));
+
+    // Resolve reply targets from the already-decrypted messages in state —
+    // never re-fetch (a Signal ciphertext can only be decrypted once).
+    final byId = {for (final m in messages) m.id: m};
+    final me = WebSocketService().currentUserId;
 
     final widgets = <Widget>[];
     DateTime? lastDay;
@@ -454,6 +517,8 @@ class _ChatScreenState extends State<ChatScreen> {
       }
       final tight = lastSender == message.senderId;
       lastSender = message.senderId;
+      final quoted =
+          message.replyToId == null ? null : byId[message.replyToId];
       widgets.add(
         Padding(
           padding: EdgeInsets.symmetric(vertical: tight ? 0 : 3),
@@ -468,6 +533,14 @@ class _ChatScreenState extends State<ChatScreen> {
                       otherUserId: widget.user.id,
                     ),
                   ),
+              onReply: () => setState(() => _replyingTo = message),
+              quotedMessage: quoted,
+              quotedSenderName: quoted == null
+                  ? null
+                  : (quoted.senderId == me ? 'You' : _chatTitle),
+              onTapQuote:
+                  quoted == null ? null : () => _jumpToQuoted(quoted.id),
+              isHighlighted: _highlightedId == message.id,
             ),
           ),
         ),
