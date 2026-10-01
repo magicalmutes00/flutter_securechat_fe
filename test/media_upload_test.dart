@@ -115,6 +115,72 @@ void main() {
     });
   });
 
+  group('MediaPreparationService.shouldCompress', () {
+    bool should(
+      String extension,
+      int sizeBytes,
+      String messageType,
+    ) =>
+        MediaPreparationService.shouldCompress(
+          extension: extension,
+          sizeBytes: sizeBytes,
+          messageType: messageType,
+        );
+
+    test('large photos compress, small ones pass through', () {
+      expect(should('jpg', 5 * 1024 * 1024, 'image'), isTrue);
+      expect(should('jpeg', 1024 * 1024 + 1, 'image'), isTrue);
+      expect(should('jpg', 1024 * 1024, 'image'), isFalse);
+      expect(should('png', 512 * 1024, 'image'), isFalse);
+    });
+
+    test('animated formats are never re-encoded', () {
+      expect(should('gif', 8 * 1024 * 1024, 'image'), isFalse);
+      expect(should('webp', 8 * 1024 * 1024, 'image'), isFalse);
+    });
+
+    test('heic is always attempted (conversion is the only way)', () {
+      expect(should('heic', 512 * 1024, 'image'), isTrue);
+      expect(should('heif', 9 * 1024 * 1024, 'image'), isTrue);
+    });
+
+    test('non-images never compress', () {
+      expect(should('mp4', 40 * 1024 * 1024, 'video'), isFalse);
+      expect(should('mp3', 9 * 1024 * 1024, 'audio'), isFalse);
+      expect(should('pdf', 9 * 1024 * 1024, 'document'), isFalse);
+      expect(should('jpg', 9 * 1024 * 1024, 'hologram'), isFalse);
+    });
+  });
+
+  group('MediaPreparationService.uploadFilename', () {
+    test('passes the original name through when nothing converted', () {
+      expect(
+        MediaPreparationService.uploadFilename(
+            '/a/IMG_1.jpg', '/a/IMG_1.jpg'),
+        'IMG_1.jpg',
+      );
+    });
+
+    test('converted photos take the original stem with .jpg', () {
+      expect(
+        MediaPreparationService.uploadFilename(
+            '/a/IMG_1.heic', '/tmp/sc_img_9.jpg'),
+        'IMG_1.jpg',
+      );
+      expect(
+        MediaPreparationService.uploadFilename('/a/shot.PNG', '/tmp/x.jpg'),
+        'shot.jpg',
+      );
+    });
+
+    test('extensionless originals still get a usable name', () {
+      expect(
+        MediaPreparationService.uploadFilename('/a/photo', '/tmp/x.jpg'),
+        'photo.jpg',
+      );
+    });
+  });
+
   group('Message.uploadProgress', () {
     test('defaults to null and never serializes', () {
       final message = _message().copyWith(uploadProgress: 0.4);

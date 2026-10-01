@@ -1,5 +1,8 @@
 import 'dart:io';
 
+import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:path_provider/path_provider.dart';
+
 import '../../core/constants/app_constants.dart';
 
 /// Thrown when a picked file must not be uploaded. Carries the exact line
@@ -90,6 +93,105 @@ class MediaPreparationService {
       default:
         return 'file';
     }
+  }
+
+  /// Photos 12 MP and up are the norm; uploading them raw means encrypting
+  /// and sending ~5-10x the bytes a chat bubble needs. Compress to a bounded
+  /// JPEG before encryption instead.
+  static const int compressMaxDimension = 1600;
+  static const int compressQuality = 80;
+
+  /// Files at or below this size skip conversion — not worth the CPU, and
+  /// re-encoding a tiny image can even grow it.
+  static const int compressSkipBelowBytes = 1024 * 1024;
+
+  /// Whether [prepareImage] would convert the file. Pure and unit-tested;
+  /// the native conversion itself can't run in `flutter test`.
+  static bool shouldCompress({
+    required String extension,
+    required int sizeBytes,
+    required String messageType,
+  }) {
+    // Only still photos are resized; video/audio/documents upload as-is.
+    if (messageType != AppConstants.messageTypeImage) return false;
+    // GIF and WebP can animate — re-encoding to JPEG would silently kill
+    // that, so they pass through untouched.
+    if (extension == 'gif' || extension == 'webp') return false;
+    // HEIC/HEIF are always attempted: a successful conversion is the only
+    // way those photos become sendable at all (the server rejects the
+    // format). A native-codec failure falls back to the original below.
+    if (extension == 'heic' || extension == 'heif') return true;
+    return sizeBytes > compressSkipBelowBytes;
+  }
+
+  /// Converts a picked photo to a bounded JPEG and returns the path to
+  /// upload-and-encrypt. Returns [filePath] unchanged when conversion is
+  /// pointless (small/GIF/WebP/non-image) or the native codec fails.
+  /// Throws [MediaValidationException] when the file is gone.
+  static Future<String> prepareImage({
+    required String filePath,
+    required String messageType,
+  }) async {
+    final file = File(filePath);
+    if (!await file.exists()) {
+      throw const MediaValidationException(
+          'That file is no longer available.');
+    }
+    final name = filePath.split('/').last.split('\\').last;
+    final dot = name.lastIndexOf('.');
+    final extension = dot == -1 ? '' : name.substring(dot + 1).toLowerCase();
+    final size = await file.length();
+    if (!shouldCompress(
+        extension: extension, sizeBytes: size, messageType: messageType)) {
+      return filePath;
+    }
+    final tmp = await getTemporaryDirectory();
+    final target =
+        '${tmp.path}/sc_img_${DateTime.now().microsecondsSinceEpoch}.jpg';
+    try {
+      final out = await FlutterImageCompress.compressAndGetFile(
+        filePath,
+        target,
+        minWidth: compressMaxDimension,
+        minHeight: compressMaxDimension,
+        quality: compressQuality,
+      );
+      if (out == null) return filePath;
+      final outLen = await File(out.path).length();
+      if (outLen >= size) {
+        // No win (e.g. a tiny input the scaler grew): drop it, keep the
+        // original.
+        try {
+          await File(out.path).delete();
+        } catch (_) {}
+        return filePath;
+      }
+      return out.path;
+    } catch (_) {
+      // Native codec missing (e.g. HEIC on some Android builds): fall back
+      // to the original; validation rules on its acceptability.
+      return filePath;
+    }
+  }
+
+  /// Upload filename for a prepared file: passthrough normally, but a
+  /// converted photo takes the original stem with a `.jpg` extension so the
+  /// server's extension allow-list sees what the bytes actually are.
+  static String uploadFilename(String originalPath, String sendPath) {
+    final original = originalPath.split('/').last.split('\\').last;
+    if (sendPath == originalPath) return original;
+    final dot = original.lastIndexOf('.');
+    final stem = dot == -1 ? original : original.substring(0, dot);
+    return '$stem.jpg';
+  }
+
+  /// Deletes our own transient files (compressed copies, ciphertext). Never
+  /// touches the original — it belongs to the picker/gallery.
+  static Future<void> deleteTemp(String path, String originalPath) async {
+    if (path == originalPath) return;
+    try {
+      await File(path).delete();
+    } catch (_) {}
   }
 
   /// Throws [MediaValidationException] when the file at [filePath] must not

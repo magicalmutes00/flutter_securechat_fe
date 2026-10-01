@@ -52,23 +52,43 @@ class _CreateStatusScreenState extends State<CreateStatusScreen> {
       String? mediaType;
 
       if (_image != null) {
-        // Same pre-flight gate as chat sends: fail here with an actionable
-        // message instead of after a full upload.
+        // Same pipeline as chat sends: shrink, gate, upload. A validation
+        // failure surfaces its own message; a converted photo uploads under
+        // its original stem with a .jpg extension.
+        final original = _image!.path;
+        String sendPath = original;
         try {
+          sendPath = await MediaPreparationService.prepareImage(
+            filePath: original,
+            messageType: AppConstants.messageTypeImage,
+          );
           await MediaPreparationService.validate(
-            filePath: _image!.path,
+            filePath: sendPath,
             messageType: AppConstants.messageTypeImage,
           );
         } on MediaValidationException catch (e) {
-          throw Exception(e.message);
+          await MediaPreparationService.deleteTemp(sendPath, original);
+          if (mounted) {
+            setState(() => _posting = false);
+            _showError(e.message);
+          }
+          return;
         }
-        final upload =
-            await _api.uploadFile(_image!.path, AppConstants.messageTypeImage);
-        if (upload['success'] != true) {
-          throw Exception(upload['message'] ?? 'Failed to upload image');
+        try {
+          final upload = await _api.uploadFile(
+            sendPath,
+            AppConstants.messageTypeImage,
+            filename:
+                MediaPreparationService.uploadFilename(original, sendPath),
+          );
+          if (upload['success'] != true) {
+            throw Exception(upload['message'] ?? 'Failed to upload image');
+          }
+          mediaPath = upload['url'];
+          mediaType = upload['media_type'] ?? 'image/jpeg';
+        } finally {
+          await MediaPreparationService.deleteTemp(sendPath, original);
         }
-        mediaPath = upload['url'];
-        mediaType = upload['media_type'] ?? 'image/jpeg';
       }
 
       await _api.createStatus(

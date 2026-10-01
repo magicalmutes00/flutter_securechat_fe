@@ -623,14 +623,23 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     ChatSendFileMessage event,
     Emitter<ChatState> emit,
   ) async {
-    // Reject doomed files before rendering anything: a file that can never
-    // upload gets a snackbar, not a bubble (there is nothing to retry).
+    // Shrink photos first: a 12 MP original becomes a bounded JPEG, so
+    // encryption/upload move a fraction of the bytes. Returns the original
+    // when conversion is pointless or impossible; the gate below rules on
+    // whatever actually uploads. A rejected file gets a snackbar, not a
+    // bubble (there is nothing to retry).
+    String sendPath = event.filePath;
     try {
-      await MediaPreparationService.validate(
+      sendPath = await MediaPreparationService.prepareImage(
         filePath: event.filePath,
         messageType: event.messageType,
       );
+      await MediaPreparationService.validate(
+        filePath: sendPath,
+        messageType: event.messageType,
+      );
     } on MediaValidationException catch (e) {
+      await MediaPreparationService.deleteTemp(sendPath, event.filePath);
       emit(state.copyWith(
         status: ChatStatus.loaded,
         errorMessage: e.message,
@@ -697,34 +706,46 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     try {
       // Encrypt the media bytes end-to-end before they leave the device.
       final encryptedMedia =
-          await E2eeService.instance.encryptMediaFile(event.filePath);
+          await E2eeService.instance.encryptMediaFile(sendPath);
+      // The compressor's copy has served its purpose (encrypt read it fully).
+      await MediaPreparationService.deleteTemp(sendPath, event.filePath);
 
       // Progress ticks arrive per Dio write chunk; only re-emit past a 5%
       // step so a large upload doesn't rebuild the list on every chunk.
       // Emitting here is safe: Dio only calls back while this upload await
       // is still pending, i.e. while this handler is alive.
       var lastEmittedProgress = 0.0;
-      final uploadResult = await _apiClient.uploadFile(
-        encryptedMedia.cipherPath,
-        event.messageType,
-        // Keep the original file's name so the server's extension allow-list
-        // sees e.g. ".jpg" — the ciphertext content itself is opaque.
-        filename: tempMessage.fileName,
-        onSendProgress: (sent, total) {
-          if (isClosed || total <= 0) return;
-          final progress = (sent / total).clamp(0.0, 1.0);
-          if (progress - lastEmittedProgress < 0.05 && progress < 1.0) {
-            return;
-          }
-          lastEmittedProgress = progress;
-          final ticked = state.messages
-              .map((m) => m.id == tempId
-                  ? m.copyWith(uploadProgress: progress)
-                  : m)
-              .toList();
-          emit(state.copyWith(messages: ticked));
-        },
-      );
+      Map<String, dynamic> uploadResult;
+      try {
+        uploadResult = await _apiClient.uploadFile(
+          encryptedMedia.cipherPath,
+          event.messageType,
+          // A converted photo takes the original stem with a .jpg extension
+          // so the server's extension allow-list sees what the bytes are;
+          // otherwise the original name travels with the opaque ciphertext.
+          filename: MediaPreparationService.uploadFilename(
+              event.filePath, sendPath),
+          onSendProgress: (sent, total) {
+            if (isClosed || total <= 0) return;
+            final progress = (sent / total).clamp(0.0, 1.0);
+            if (progress - lastEmittedProgress < 0.05 && progress < 1.0) {
+              return;
+            }
+            lastEmittedProgress = progress;
+            final ticked = state.messages
+                .map((m) => m.id == tempId
+                    ? m.copyWith(uploadProgress: progress)
+                    : m)
+                .toList();
+            emit(state.copyWith(messages: ticked));
+          },
+        );
+      } finally {
+        // The server has the ciphertext — or the upload died trying. Either
+        // way our transient copy goes; a retry re-encrypts from the original.
+        await MediaPreparationService.deleteTemp(
+            encryptedMedia.cipherPath, event.filePath);
+      }
 
       if (uploadResult['success'] != true) {
         throw Exception(uploadResult['message'] ?? 'Upload failed');
