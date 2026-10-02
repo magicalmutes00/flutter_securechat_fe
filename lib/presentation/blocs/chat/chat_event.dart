@@ -138,6 +138,13 @@ class ChatMarkConversationRead extends ChatEvent {
   List<Object?> get props => [peerId];
 }
 
+/// Dispatched when a 1:1 chat screen is popped: clears [ChatState.currentChatUserId]
+/// so later live messages are treated as unviewed (badge +1, no read receipt)
+/// instead of being attributed to the stale open chat.
+class ChatLeaveConversation extends ChatEvent {
+  const ChatLeaveConversation();
+}
+
 class ChatSearchUsers extends ChatEvent {
   final String query;
 

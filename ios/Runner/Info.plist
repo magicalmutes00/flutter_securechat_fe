@@ -90,6 +90,10 @@
 	<string>SecureChat saves received photos and videos to your photo library when you choose to.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>SecureChat reads your contacts to help you find and connect with people you know.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
 	<key>UISupportedInterfaceOrientations</key>

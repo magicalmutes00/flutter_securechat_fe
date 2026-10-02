@@ -36,6 +36,10 @@ class AppPalette {
   /// Dark text painted on top of lime fills (white on lime is ~2:1).
   static const Color onLime = Color(0xFF1A2405);
 
+  /// Read-receipt tick green: single tick = sent, double tick = delivered,
+  /// double tick in this green = seen. Kept distinct from the lime accent.
+  static const Color readGreen = Color(0xFF22C55E);
+
   /// Muted olive fill for lime-tinted surfaces in dark mode.
   static const Color oliveContainer = Color(0xFF232E0A);
 

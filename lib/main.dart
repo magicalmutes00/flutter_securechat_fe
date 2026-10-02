@@ -1,4 +1,5 @@
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -7,6 +8,7 @@ import 'core/theme/app_theme.dart';
 import 'data/services/in_app_notification_service.dart';
 import 'data/services/local_storage_service.dart';
 import 'data/services/notification_service.dart';
+import 'data/services/push_notification_service.dart';
 import 'data/services/rtc/incoming_call_router.dart';
 import 'presentation/blocs/auth/auth_bloc.dart';
 import 'presentation/blocs/auth/auth_event.dart';
@@ -34,6 +36,14 @@ void main() async {
     await Firebase.initializeApp();
   } catch (e) {
     debugPrint('Firebase initialization skipped: $e');
+  }
+
+  // Handles pushes arriving while the app is backgrounded or killed, on
+  // both Android and iOS. Must be registered before runApp.
+  try {
+    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+  } catch (e) {
+    debugPrint('Background push handler skipped: $e');
   }
 
   final notificationService = NotificationService();

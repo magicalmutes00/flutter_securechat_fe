@@ -212,21 +212,50 @@ class InAppNotificationService with WidgetsBindingObserver {
   }
 
   void _onTapPayload(NotificationPayload payload) {
-    if (payload.senderId == null) return;
-    final data = payload.data ?? const {};
-    final isGroup = data['is_group'] == true || data['group_id'] != null;
+    final data = payload.data;
+    if (data == null) return;
+    openConversationFromPushData(Map<String, dynamic>.from(data));
+  }
+
+  /// Opens the conversation referenced by a raw push-data map: FCM taps
+  /// with the app killed/backgrounded, or local-notification taps. Handles
+  /// 1:1 pushes (`sender_id`) and group pushes (`group_id`, which carry no
+  /// sender id). The target screen loads the real history itself; the
+  /// skeleton message only carries routing ids.
+  void openConversationFromPushData(Map<String, dynamic> data) {
+    final senderId = data['sender_id']?.toString();
+    final groupId = data['group_id']?.toString();
+    final isGroup = data['is_group'] == true || groupId != null;
+    if (isGroup) {
+      if (groupId == null) return;
+      _openConversation(
+        Message(
+          id: (data['message_id'] as String?) ?? '',
+          senderId: senderId ?? '',
+          receiverId: '',
+          groupId: groupId,
+          messageType: 'text',
+          content: '',
+          status: 'sent',
+          createdAt: DateTime.now(),
+        ),
+        isGroup: true,
+      );
+      return;
+    }
+    if (senderId == null) return;
     _openConversation(
       Message(
         id: (data['message_id'] as String?) ?? '',
-        senderId: payload.senderId!,
+        senderId: senderId,
         receiverId: '',
-        groupId: data['group_id'] as String?,
+        groupId: null,
         messageType: 'text',
         content: '',
         status: 'sent',
         createdAt: DateTime.now(),
       ),
-      isGroup: isGroup,
+      isGroup: false,
     );
   }
 

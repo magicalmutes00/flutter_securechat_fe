@@ -47,6 +47,11 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- FCM system-tray notifications use the app's high-importance
+             message channel instead of the SDK's default channel. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="secure_chat_messages" />
     </application>
     <queries>
         <intent>

@@ -9,7 +9,8 @@ import 'attachment_image.dart';
 import 'ui/ui.dart';
 
 /// Chat bubble. Sent messages are solid brand blue with white copy;
-/// received messages are surface-toned. Read receipts use the lime accent.
+/// received messages are surface-toned. Ticks: single = sent, double =
+/// delivered, double green = seen.
 class MessageBubble extends StatefulWidget {
   final Message message;
   final bool isMe;
@@ -410,13 +411,13 @@ class _MessageBubbleState extends State<MessageBubble>
         color: context.appColors.onSentBubble.withValues(alpha: 0.8),
       );
     }
-    // Read receipts pop in lime on the blue bubble; delivery states stay
-    // quiet so "read" is unmistakable.
+    // Seen ticks pop in green on the blue bubble; sent (single tick) and
+    // delivered (double tick) stay quiet so "seen" is unmistakable.
     if (widget.message.isRead) {
       return const Icon(
         Icons.done_all,
         size: 15,
-        color: AppPalette.lime400,
+        color: AppPalette.readGreen,
       );
     } else if (widget.message.isDelivered) {
       return Icon(

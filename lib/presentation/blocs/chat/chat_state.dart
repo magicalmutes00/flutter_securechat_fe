@@ -59,6 +59,11 @@ class ChatState extends Equatable {
     /// without this flag a shown snackbar message would linger in state and
     /// suppress the next identical error via the listener's change guard.
     bool clearErrorMessage = false,
+
+    /// Set to true to clear [currentChatUserId] when leaving a chat screen.
+    /// Same nullable-field limitation as above: without the flag the stale
+    /// open-chat id could never be reset to null.
+    bool clearCurrentChat = false,
     bool? hasMoreMessages,
     bool? isTyping,
     String? typingUserId,
@@ -72,7 +77,8 @@ class ChatState extends Equatable {
       conversations: conversations ?? this.conversations,
       lastMessages: lastMessages ?? this.lastMessages,
       unreadCounts: unreadCounts ?? this.unreadCounts,
-      currentChatUserId: currentChatUserId ?? this.currentChatUserId,
+      currentChatUserId:
+          clearCurrentChat ? null : (currentChatUserId ?? this.currentChatUserId),
       pendingUploads: pendingUploads ?? this.pendingUploads,
       errorMessage:
           clearErrorMessage ? null : (errorMessage ?? this.errorMessage),

@@ -134,6 +134,14 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     InAppNotificationService.instance.setViewingChat(null);
+    // Forget the open chat so messages arriving after the pop count as
+    // unread and never auto-send a read receipt (the "seen on home page"
+    // bug: a stale open-chat id survived the pop).
+    try {
+      context.read<ChatBloc>().add(const ChatLeaveConversation());
+    } catch (_) {
+      // Bloc already gone (e.g. logout reset) — nothing to clear.
+    }
     _messageController.dispose();
     _scrollController.dispose();
     _blocSubscription?.cancel();

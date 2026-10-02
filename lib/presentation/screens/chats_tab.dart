@@ -168,8 +168,7 @@ class _ChatsTabState extends State<ChatsTab> {
           height: 88,
           child: ListView.builder(
             scrollDirection: Axis.horizontal,
-            padding:
-                const EdgeInsets.symmetric(horizontal: AppSpacing.md),
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.md),
             itemCount: _groups.length,
             itemBuilder: (context, index) {
               final group = _groups[index];
@@ -209,9 +208,8 @@ class _ChatsTabState extends State<ChatsTab> {
         if (state.conversations.isNotEmpty) {
           final users = state.conversations.values.where((user) {
             if (_query.isEmpty) return true;
-            final label =
-                (user.displayName ?? user.email ?? user.phone ?? '')
-                    .toLowerCase();
+            final label = (user.displayName ?? user.email ?? user.phone ?? '')
+                .toLowerCase();
             return label.contains(_query);
           }).toList();
 
@@ -281,10 +279,7 @@ class _ConversationTile extends StatelessWidget {
   (IconData?, String) get _preview {
     final message = lastMessage;
     if (message == null) {
-      return (
-        null,
-        user.isOnline ? 'Online — say hello' : 'Tap to chat'
-      );
+      return (null, user.isOnline ? 'Online — say hello' : 'Tap to chat');
     }
     if (message.isTextMessage) return (null, message.content);
     if (message.isImageMessage) return (Icons.image_outlined, 'Photo');
@@ -338,8 +333,7 @@ class _ConversationTile extends StatelessWidget {
               previewText,
               style: text.bodyMedium?.copyWith(
                 color: colors.onSurfaceVariant,
-                fontWeight:
-                    hasUnread ? FontWeight.w600 : FontWeight.w400,
+                fontWeight: hasUnread ? FontWeight.w600 : FontWeight.w400,
               ),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
@@ -360,19 +354,24 @@ class _ConversationTile extends StatelessWidget {
                   color: hasUnread
                       ? context.appColors.primaryEmphasis
                       : colors.onSurfaceVariant,
-                  fontWeight:
-                      hasUnread ? FontWeight.w700 : FontWeight.w500,
+                  fontWeight: hasUnread ? FontWeight.w700 : FontWeight.w500,
                 ),
               )
             else if (user.lastSeen != null)
               Text(
                 formatChatTime(user.lastSeen!),
-                style: text.labelSmall
-                    ?.copyWith(color: colors.onSurfaceVariant),
+                style:
+                    text.labelSmall?.copyWith(color: colors.onSurfaceVariant),
               ),
             if (hasUnread) ...[
               const SizedBox(height: AppSpacing.xs),
-              UnreadBadge(count: unreadCount),
+              // Align keeps the badge content-sized: as a bare child of
+              // this Column the Container would stretch to the Column's
+              // full width (the oversized-bar bug).
+              Align(
+                alignment: Alignment.centerRight,
+                child: UnreadBadge(count: unreadCount),
+              ),
             ],
           ],
         ),
@@ -429,8 +428,7 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
                 child: BlocBuilder<ChatBloc, ChatState>(
                   builder: (context, state) {
                     if (state.isSearching) {
-                      return const Center(
-                          child: CircularProgressIndicator());
+                      return const Center(child: CircularProgressIndicator());
                     }
                     return ListView.builder(
                       controller: scrollController,
@@ -438,8 +436,8 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
                       itemBuilder: (context, index) {
                         if (index == 0) {
                           return ListTile(
-                            leading: const AppAvatar(
-                                label: 'New group', radius: 22),
+                            leading:
+                                const AppAvatar(label: 'New group', radius: 22),
                             title: const Text('New group'),
                             subtitle: const Text('Chat with several people'),
                             trailing: const Icon(Icons.group_add_outlined),
@@ -454,8 +452,7 @@ class _NewConversationSheetState extends State<_NewConversationSheet> {
                         return ListTile(
                           leading: AppAvatar(label: label, radius: 22),
                           title: Text(label),
-                          subtitle:
-                              Text(user.email ?? user.phone ?? ''),
+                          subtitle: Text(user.email ?? user.phone ?? ''),
                           onTap: () => widget.onUserSelected(user),
                         );
                       },

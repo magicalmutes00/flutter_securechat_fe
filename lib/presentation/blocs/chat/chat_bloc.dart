@@ -234,6 +234,7 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     on<ChatReceiveReceipt>(_onReceiveReceipt);
     on<ChatLoadConversations>(_onLoadConversations);
     on<ChatMarkConversationRead>(_onMarkConversationRead);
+    on<ChatLeaveConversation>(_onLeaveConversation);
     on<ChatSearchUsers>(_onSearchUsers);
     on<ChatDeleteMessage>(_onDeleteMessage);
     on<ChatReset>(_onChatReset);
@@ -409,6 +410,24 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         messages: allMessages,
         hasMoreMessages: newMessages.length >= AppConstants.messagesPageSize,
       ));
+
+      // Acknowledge receipt for the peer's messages that arrived while we
+      // were away (e.g. via push with the app backgrounded): this flips the
+      // sender's single ticks to double ticks. Only rows still marked `sent`
+      // are acked, and the burst is capped so a huge backlog can't flood
+      // the socket.
+      if (_wsService.isConnected && currentUserId.isNotEmpty) {
+        var acked = 0;
+        for (final msg in displayable) {
+          if (acked >= 50) break;
+          if (!msg.isGroupMessage &&
+              msg.senderId != currentUserId &&
+              msg.status == AppConstants.messageStatusSent) {
+            _wsService.sendDeliveryReceipt(msg.senderId, msg.id);
+            acked++;
+          }
+        }
+      }
 
       // Mark the peer's messages as read now that the chat is open.
       if (_wsService.isConnected && currentUserId.isNotEmpty) {
@@ -1057,8 +1076,19 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
         (message.senderId == state.currentChatUserId ||
             message.receiverId == state.currentChatUserId);
 
-    // Auto-send a read receipt when the chat is open so the sender sees
-    // their messages flip to "read".
+    // The device itself received this message: acknowledge delivery so the
+    // sender's single tick flips to a double tick. Only for 1:1 messages —
+    // the server has no per-recipient delivery tracking for groups.
+    // (`currentChatUserId` is cleared on chat dispose, so this never fires
+    // for a chat the user already left.)
+    if (!message.isGroupMessage &&
+        message.senderId != currentUserId &&
+        _wsService.isConnected) {
+      _wsService.sendDeliveryReceipt(message.senderId, message.id);
+    }
+
+    // Auto-send a read receipt only when this exact chat is on screen, so
+    // the sender sees "read" solely when their messages were actually seen.
     if (isViewingThisChat &&
         message.senderId != currentUserId &&
         _wsService.isConnected) {
@@ -1341,6 +1371,15 @@ class ChatBloc extends Bloc<ChatEvent, ChatState> {
     if (me != null && _wsService.isConnected) {
       _wsService.sendReadReceipt(event.peerId, me);
     }
+  }
+
+  void _onLeaveConversation(
+    ChatLeaveConversation event,
+    Emitter<ChatState> emit,
+  ) {
+    // The chat screen was popped: forget the open-chat id so subsequent
+    // live messages increment the badge and never trigger a read receipt.
+    emit(state.copyWith(clearCurrentChat: true));
   }
 
   @override
